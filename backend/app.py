@@ -92,75 +92,57 @@ def debug_supabase_fixed():
         results['test'] = {"error": str(e)}
     
     return jsonify(results)
-    
+    # ============================================================================
+# SUPABASE HELPERS - FIXED (NO RECURSION)
+# ============================================================================
+
 def db_headers():
-    """Supabase database headers - FIXED VERSION"""
-    if not Config.SUPABASE_KEY:
-        logger.error("❌ SUPABASE_KEY is empty!")
-        return {}
-    
-    # Simple, clean headers - exactly what Supabase expects
-    headers = {
-        "apikey": Config.SUPABASE_KEY.strip(),  # Remove any whitespace
-        "Authorization": f"Bearer {Config.SUPABASE_KEY.strip()}",
-        "Content-Type": "application/json"
-    }
-    
-    # Log first few chars for debugging (safe)
-    logger.info(f"🔑 Using API key: {Config.SUPABASE_KEY[:20]}...")
-    logger.info(f"📤 Headers: apikey set, Authorization set")
-    
-    return headers
-def storage_headers(content_type='application/octet-stream'):
-    """Supabase storage headers"""
+    """Simple headers - no recursion possible"""
     return {
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type": content_type,
-        "x-upsert": "true"
+        "Content-Type": "application/json"
     }
 
+def supabase_request(method, path, **kwargs):
+    """Single function for all requests - NO RECURSION"""
+    if not Config.SUPABASE_KEY:
+        logger.error("❌ SUPABASE_KEY not set")
+        return None
+    
+    url = f"{Config.SUPABASE_URL}{path}"
+    headers = db_headers()
+    
+    # Add any extra headers
+    if 'headers' in kwargs:
+        headers.update(kwargs['headers'])
+        del kwargs['headers']
+    
+    try:
+        logger.info(f"📡 Supabase {method} to {path}")
+        response = requests.request(method, url, headers=headers, timeout=10, **kwargs)
+        return response
+    except Exception as e:
+        logger.error(f"❌ Supabase request failed: {e}")
+        return None
+
+# Simple wrapper functions - these DON'T call themselves
 def supabase_get(path, params=None):
-    """GET request to Supabase"""
-    if not Config.SUPABASE_KEY:
-        logger.error("SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    try:
-        response = requests.get(url, headers=db_headers(), params=params, timeout=10)
-        return response
-    except Exception as e:
-        logger.error(f"Supabase GET failed: {e}")
-        return None
+    """GET request"""
+    return supabase_request('GET', path, params=params)
 
-def supabase_post(path, json_data=None):
-    """POST request to Supabase"""
-    if not Config.SUPABASE_KEY:
-        logger.error("SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    try:
-        response = requests.post(url, headers=db_headers(), json=json_data, timeout=10)
-        return response
-    except Exception as e:
-        logger.error(f"Supabase POST failed: {e}")
-        return None
+def supabase_post(path, json=None):
+    """POST request"""
+    return supabase_request('POST', path, json=json)
 
-def supabase_patch(path, json_data=None):
-    """PATCH request to Supabase"""
-    if not Config.SUPABASE_KEY:
-        logger.error("SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    try:
-        response = requests.patch(url, headers=db_headers(), json=json_data, timeout=10)
-        return response
-    except Exception as e:
-        logger.error(f"Supabase PATCH failed: {e}")
-        return None
+def supabase_patch(path, json=None):
+    """PATCH request"""
+    return supabase_request('PATCH', path, json=json)
+
+def supabase_delete(path):
+    """DELETE request"""
+    return supabase_request('DELETE', path)
+
 
 # ============================================================================
 # PRODUCT FUNCTIONS
