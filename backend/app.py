@@ -229,11 +229,13 @@ supabase_session = create_supabase_session()
 
 # Update your db_headers() function
 def db_headers():
+    """Supabase database headers - SIMPLE VERSION"""
     return {
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation"
+    }
     }
 
 # Create a new function for Supabase requests
