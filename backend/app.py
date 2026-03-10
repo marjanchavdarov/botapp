@@ -52,6 +52,8 @@ class Config:
     SUPABASE_URL = os.environ.get('SUPABASE_URL')
     SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
     STORAGE_BUCKET = 'katalog-images'
+    SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://172.64.149.246')
+    SUPABASE_HOST = os.environ.get('SUPABASE_HOST', 'jwuifezafytihgzepylq.supabase.co')
     
     # Validate required variables
     if not GEMINI_API_KEY:
