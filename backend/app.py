@@ -1,155 +1,112 @@
 """
-katalog.ai - Complete working version
-Fully implemented with no placeholders
+katalog.ai backend
+clean production version - FIXED with reviewer suggestions
 """
 
 import os
 import json
-import base64
 import uuid
-import threading
+import base64
 import logging
-from datetime import datetime, date, timedelta
-from urllib.parse import quote, urlparse, urlunparse
-import re
+import threading
 import tempfile
-import socket
-import dns.resolver
+import re
+from datetime import datetime, date, timedelta
+from urllib.parse import quote
+
+import requests
+import fitz
 
 from flask import Flask, request, jsonify, send_from_directory
-import requests
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# ----------------------------------------------------------------------------
+# CONFIG
+# ----------------------------------------------------------------------------
 
-app = Flask(__name__, static_folder='static', static_url_path='/static')
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("katalog")
 
-# Fix DNS issues at startup
-def fix_dns():
-    try:
-        # Pre-resolve Google domains
-        socket.gethostbyname('generativelanguage.googleapis.com')
-        socket.gethostbyname('www.googleapis.com')
-        socket.gethostbyname('jwuifezafytihgzepylq.supabase.co')
-        logger.info("✅ DNS resolved for all services")
-    except Exception as e:
-        logger.error(f"❌ DNS resolution failed: {e}")
+app = Flask(__name__, static_folder="static", static_url_path="/static")
 
-fix_dns()
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 class Config:
-    GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-    SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://jwuifezafytihgzepylq.supabase.co')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
-    STORAGE_BUCKET = 'katalog-images'
-    
-    # Validate required variables
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set - AI features will be limited")
-    if not SUPABASE_KEY:
-        logger.warning("SUPABASE_KEY not set - database features will be limited")
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    STORAGE_BUCKET = "katalog-images"
+    BASE_URL = os.environ.get("BASE_URL", "https://botapp-u7qa.onrender.com")
 
-# Croatia config
+
 CROATIA_STORES = [
-    {'id': 'lidl', 'name': 'Lidl', 'color': '#0050aa'},
-    {'id': 'kaufland', 'name': 'Kaufland', 'color': '#e30613'},
-    {'id': 'spar', 'name': 'Spar', 'color': '#1e6b3b'},
-    {'id': 'konzum', 'name': 'Konzum', 'color': '#ed1c24'},
-    {'id': 'dm', 'name': 'dm', 'color': '#e31837'},
-    {'id': 'plodine', 'name': 'Plodine', 'color': '#009640'},
+    {"id": "lidl", "name": "Lidl", "color": "#0050aa"},
+    {"id": "kaufland", "name": "Kaufland", "color": "#e30613"},
+    {"id": "spar", "name": "Spar", "color": "#1e6b3b"},
+    {"id": "konzum", "name": "Konzum", "color": "#ed1c24"},
+    {"id": "dm", "name": "dm", "color": "#e31837"},
+    {"id": "plodine", "name": "Plodine", "color": "#009640"},
 ]
 
-# ============================================================================
-# SUPABASE HELPERS - DIRECT NO RECURSION
-# ============================================================================
+# ----------------------------------------------------------------------------
+# SUPABASE
+# ----------------------------------------------------------------------------
 
-def supabase_get(path, params=None):
-    """Direct GET request - NO recursion possible"""
-    if not Config.SUPABASE_KEY:
-        logger.error("❌ SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    headers = {
-        "apikey": Config.SUPABASE_KEY,
-        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        logger.info(f"📡 GET {path}")
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        return response
-    except Exception as e:
-        logger.error(f"❌ GET failed: {e}")
-        return None
 
-def supabase_post(path, json_data=None):
-    """Direct POST request - NO recursion"""
-    if not Config.SUPABASE_KEY:
-        logger.error("❌ SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    headers = {
-        "apikey": Config.SUPABASE_KEY,
-        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        logger.info(f"📡 POST {path}")
-        response = requests.post(url, headers=headers, json=json_data, timeout=10)
-        return response
-    except Exception as e:
-        logger.error(f"❌ POST failed: {e}")
-        return None
-
-def supabase_patch(path, json_data=None):
-    """Direct PATCH request - NO recursion"""
-    if not Config.SUPABASE_KEY:
-        logger.error("❌ SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    headers = {
-        "apikey": Config.SUPABASE_KEY,
-        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        logger.info(f"📡 PATCH {path}")
-        response = requests.patch(url, headers=headers, json=json_data, timeout=10)
-        return response
-    except Exception as e:
-        logger.error(f"❌ PATCH failed: {e}")
-        return None
-
-# Storage headers
-def storage_headers(content_type='image/jpeg'):
-    """Headers for Supabase storage"""
+def sb_headers():
     return {
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type": content_type,
-        "x-upsert": "true"
+        "Content-Type": "application/json",
     }
 
-# ============================================================================
-# PRODUCT FUNCTIONS
-# ============================================================================
 
-def get_products(store=None, query=None, limit=100):
-    """Get products from database"""
+def supabase_get(path, params=None):
+    try:
+        url = f"{Config.SUPABASE_URL}{path}"
+        r = requests.get(url, headers=sb_headers(), params=params, timeout=20)
+        return r
+    except Exception as e:
+        logger.error(f"Supabase GET failed {e}")
+        return None
+
+
+def supabase_post(path, data):
+    try:
+        url = f"{Config.SUPABASE_URL}{path}"
+        r = requests.post(url, headers=sb_headers(), json=data, timeout=20)
+        
+        # ✅ Check for errors
+        if r.status_code >= 300:
+            logger.error(f"Supabase POST failed: {r.status_code} - {r.text[:200]}")
+            return None
+            
+        return r
+    except Exception as e:
+        logger.error(f"Supabase POST failed {e}")
+        return None
+
+
+def supabase_patch(path, data):
+    try:
+        url = f"{Config.SUPABASE_URL}{path}"
+        r = requests.patch(url, headers=sb_headers(), json=data, timeout=20)
+        
+        # ✅ Check for errors
+        if r.status_code >= 300:
+            logger.error(f"Supabase PATCH failed: {r.status_code} - {r.text[:200]}")
+            return None
+            
+        return r
+    except Exception as e:
+        logger.error(f"Supabase PATCH failed {e}")
+        return None
+
+
+# ----------------------------------------------------------------------------
+# PRODUCTS
+# ----------------------------------------------------------------------------
+
+
+def get_products(store=None, query=None, limit=50):
     today = date.today().strftime('%Y-%m-%d')
     
     params = {
@@ -159,17 +116,21 @@ def get_products(store=None, query=None, limit=100):
         "limit": limit,
         "order": "store,product"
     }
-    
+
     if store:
         params["store"] = f"eq.{store}"
-    
+
     if query:
+        query = re.sub(r"[^a-zA-Z0-9\sčćšđžČĆŠĐŽ]", "", query)
         params["product"] = f"ilike.*{query}*"
-    
-    response = supabase_get("/rest/v1/products", params)
-    if response and response.status_code == 200:
-        return response.json()
+
+    r = supabase_get("/rest/v1/products", params)
+
+    if r and r.status_code == 200:
+        return r.json()
+
     return []
+
 
 def save_products(products, store, page_num, page_url, catalogue_name, valid_from, valid_until):
     """Save products to database"""
@@ -178,470 +139,290 @@ def save_products(products, store, page_num, page_url, catalogue_name, valid_fro
     
     records = []
     for p in products:
-        if not p.get('sale_price') or p.get('sale_price') in [None, 'null', '']:
+        if not p.get('sale_price'):
             continue
-        
-        vu = p.get('valid_until') or valid_until
-        vf = p.get('valid_from') or valid_from
         
         records.append({
             "store": store,
             "product": p.get('product', ''),
-            "brand": p.get('brand') if p.get('brand') not in [None, 'null'] else None,
-            "quantity": p.get('quantity') if p.get('quantity') not in [None, 'null'] else None,
-            "original_price": p.get('original_price') if p.get('original_price') not in [None, 'null'] else None,
-            "sale_price": p.get('sale_price', ''),
-            "discount_percent": p.get('discount_percent') if p.get('discount_percent') not in [None, 'null'] else None,
+            "brand": p.get('brand'),
+            "quantity": p.get('quantity'),
+            "original_price": p.get('original_price'),
+            "sale_price": p.get('sale_price'),
+            "discount_percent": p.get('discount_percent'),
             "category": p.get('category', 'Other'),
-            "subcategory": p.get('subcategory'),
-            "valid_from": vf,
-            "valid_until": vu,
-            "is_expired": False,
+            "valid_from": valid_from,
+            "valid_until": valid_until,
             "page_image_url": page_url,
             "page_number": page_num,
-            "catalogue_name": catalogue_name,
-            "catalogue_week": datetime.now().strftime('%Y-W%V')
+            "catalogue_name": catalogue_name
         })
     
-    if not records:
-        return 0
-    
-    response = supabase_post("/rest/v1/products", records)
-    if response and response.status_code in [200, 201]:
-        logger.info(f"Saved {len(records)} products")
-        return len(records)
+    if records:
+        # ✅ Check if save succeeded
+        r = supabase_post("/rest/v1/products", records)
+        if r and r.status_code < 300:
+            logger.info(f"✅ Saved {len(records)} products")
+            return len(records)
+        else:
+            logger.error(f"❌ Failed to save products")
+            return 0
     return 0
 
-def save_catalogue(store, catalogue_name, valid_from, valid_until, fine_print, pages, products_count):
-    """Save catalogue metadata"""
-    supabase_post("/rest/v1/catalogues", {
-        "store": store,
-        "catalogue_name": catalogue_name,
-        "valid_from": valid_from,
-        "valid_until": valid_until,
-        "fine_print": fine_print,
-        "pages": pages,
-        "products_count": products_count
-    })
 
-def save_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
-    """Save job to database"""
-    supabase_post("/rest/v1/jobs", {
-        "id": job_id,
-        "store": store,
-        "catalogue_name": catalogue_name,
-        "valid_from": valid_from,
-        "valid_until": valid_until,
-        "total_pages": total_pages,
-        "current_page": 0,
-        "total_products": 0,
-        "status": "processing",
-        "created_at": datetime.now().isoformat()
-    })
+# ----------------------------------------------------------------------------
+# GEMINI
+# ----------------------------------------------------------------------------
 
-def update_job(job_id, data):
-    """Update job status"""
-    supabase_patch(f"/rest/v1/jobs?id=eq.{job_id}", data)
 
-def get_job(job_id):
-    """Get job by ID"""
-    response = supabase_get(f"/rest/v1/jobs?id=eq.{job_id}")
-    if response and response.status_code == 200 and response.json():
-        return response.json()[0]
-    return None
-
-# ============================================================================
-# STORAGE FUNCTIONS
-# ============================================================================
-
-def upload_image(img_bytes, storage_path):
-    """Upload image to Supabase storage"""
-    if not Config.SUPABASE_KEY:
-        logger.error("SUPABASE_KEY not set - cannot upload images")
-        return None
-    
-    headers = storage_headers()
-    
-    try:
-        url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{storage_path}"
-        response = requests.put(url, headers=headers, data=img_bytes, timeout=30)
-        
-        if response.status_code in [200, 201]:
-            public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{storage_path}"
-            logger.info(f"✅ Image uploaded: {public_url}")
-            return public_url
-        else:
-            logger.warning(f"Upload failed: {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"Upload exception: {e}")
-    
-    return None
-
-def get_page_image_url(store, page_num):
-    """Get image URL for a specific page"""
-    params = {
-        "store": f"eq.{store}",
-        "page_number": f"eq.{page_num}",
-        "select": "page_image_url",
-        "limit": 1
-    }
-    
-    response = supabase_get("/rest/v1/products", params)
-    if response and response.status_code == 200 and response.json():
-        return response.json()[0].get('page_image_url')
-    
-    return None
-
-# ============================================================================
-# GEMINI AI FUNCTIONS
-# ============================================================================
-
-def extract_products_from_image(img_b64, store, page_num):
-    """Use Gemini to extract products from catalog page image"""
+def extract_products(img_b64, store, page):
     if not Config.GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set - using mock data")
-        return [
-            {
-                "product": "Mlijeko Z'bregov 1L",
-                "brand": "Z'bregov",
-                "quantity": "1L",
-                "original_price": "1.29",
-                "sale_price": "0.99",
-                "discount_percent": "23%",
-                "category": "Dairy",
-                "valid_from": None,
-                "valid_until": None
-            }
-        ], None
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={Config.GEMINI_API_KEY}"
-    
+        logger.warning("GEMINI_API_KEY not set")
+        return []
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={Config.GEMINI_API_KEY}"
+
     prompt = f"""
-    Extract ALL products from this catalog page.
-    
-    Store: {store}
-    Page: {page_num}
-    
-    RULES:
-    1. Extract ONLY products with visible prices in €
-    2. Translate product names to English
-    3. Include brand, quantity, prices
-    4. Convert dates to YYYY-MM-DD format
-    
-    Return as JSON array:
-    [
-        {{
-            "product": "English name",
-            "brand": "brand or null",
-            "quantity": "250g or null",
-            "original_price": "2.99 or null",
-            "sale_price": "1.99",
-            "discount_percent": "33% or null",
-            "valid_from": "2026-03-02 or null",
-            "valid_until": "2026-03-08 or null",
-            "category": "Category",
-            "subcategory": "Subcategory"
-        }}
-    ]
-    
-    If no valid products, return: []
-    """
-    
+Extract ALL products from this catalog page.
+
+Store: {store}
+Page: {page}
+
+Return JSON array. Each product must have:
+- product: name (translate to English)
+- brand: brand name or null
+- sale_price: current price in €
+- original_price: original price or null
+- quantity: size/weight or null
+- discount_percent: discount % or null
+- category: one of [Meat and Fish, Dairy, Bread and Bakery, Fruit and Vegetables, Drinks, Snacks and Sweets, Other]
+
+Example:
+[
+  {{
+    "product": "Milk 1L",
+    "brand": "Z'bregov",
+    "sale_price": "0.99",
+    "original_price": "1.29",
+    "quantity": "1L",
+    "discount_percent": "23%",
+    "category": "Dairy"
+  }}
+]
+
+If no products, return [].
+"""
+
     body = {
-        "contents": [{
-            "parts": [
-                {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
-                {"text": prompt}
-            ]
-        }],
+        "contents": [
+            {
+                "parts": [
+                    {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+                    {"text": prompt},
+                ]
+            }
+        ],
         "generationConfig": {
-            "maxOutputTokens": 8192,
-            "temperature": 0.1
+            "temperature": 0.1,
+            "maxOutputTokens": 4096
         }
     }
-    
+
     for attempt in range(3):
         try:
-            response = requests.post(url, json=body, timeout=45)
-            result = response.json()
+            r = requests.post(url, json=body, timeout=90)
+            
+            if r.status_code != 200:
+                logger.error(f"Gemini API error {r.status_code}")
+                continue
+                
+            result = r.json()
             
             if 'candidates' not in result:
-                logger.error(f"Gemini error: {result}")
+                logger.error(f"Gemini invalid response: {result}")
                 continue
+
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
             
-            text = result['candidates'][0]['content']['parts'][0]['text']
-            text = text.replace('```json', '').replace('```', '').strip()
+            # ✅ FIX: Extract only the JSON array using regex
+            match = re.search(r'\[.*\]', text, re.DOTALL)
             
-            products = json.loads(text)
-            if not isinstance(products, list):
-                return [], None
+            if not match:
+                logger.error(f"No JSON array found in Gemini response")
+                continue
+                
+            json_str = match.group()
+            products = json.loads(json_str)
             
-            logger.info(f"Extracted {len(products)} products from page {page_num}")
-            return products, None
-            
+            if isinstance(products, list):
+                logger.info(f"✅ Extracted {len(products)} products from page {page}")
+                return products
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Gemini JSON parse failed: {e}")
         except Exception as e:
             logger.error(f"Gemini attempt {attempt+1} failed: {e}")
-            if attempt == 2:
-                return [], None
-            continue
-    
-    return [], None
+            
+    return []
 
-def ask_gemini(message, products_context):
-    """Ask Gemini a question with context"""
+
+def ask_ai(message, products):
     if not Config.GEMINI_API_KEY:
-        return f"Našao sam {len(products_context)} proizvoda. Upiši broj stranice da vidiš sliku."
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={Config.GEMINI_API_KEY}"
-    
+        return "Pronašao sam neke proizvode. Upiši broj stranice da vidiš sliku."
+
+    context = ""
+    for p in products[:5]:
+        context += f"- {p.get('store')}: {p.get('product')} - {p.get('sale_price')}€ (str. {p.get('page_number')})\n"
+
     prompt = f"""
-    You are a friendly shopping assistant for Croatia.
-    Today is {date.today().strftime('%d.%m.%Y.')}
-    
-    PRODUCTS FOUND:
-    {products_context}
-    
-    USER QUESTION: {message}
-    
-    INSTRUCTIONS:
-    - Respond in Croatian
-    - Be helpful and friendly
-    - Mention store names and page numbers
-    - End with "Stranice: X, Y, Z" if there are page numbers
-    
-    RESPOND IN CROATIAN:
-    """
-    
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": 1024,
-            "temperature": 0.3
-        }
-    }
-    
+You are a helpful shopping assistant for Croatia.
+Today is {date.today().strftime('%d.%m.%Y.')}
+
+User question: {message}
+
+Products found:
+{context}
+
+Instructions:
+- Respond in Croatian
+- Be friendly and helpful
+- Mention store names and page numbers
+- End with "Stranice: X, Y, Z" if products have page numbers
+
+Response:
+"""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={Config.GEMINI_API_KEY}"
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+
     try:
-        response = requests.post(url, json=body, timeout=30)
-        result = response.json()
-        
-        if 'candidates' in result:
-            return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            logger.error(f"Gemini error: {result}")
-            return "Došlo je do greške."
-            
+        r = requests.post(url, json=body, timeout=60)
+        result = r.json()
+        return result["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        logger.error(f"Gemini request failed: {e}")
-        return "Došlo je do greške."
+        logger.error(f"Chat error: {e}")
+        return "Dogodila se greška."
 
-# ============================================================================
-# USER FUNCTIONS
-# ============================================================================
 
-def get_or_create_user(device_id):
-    """Get or create user in database"""
-    response = supabase_get(f"/rest/v1/users?device_id=eq.{quote(device_id)}")
-    
-    if response and response.status_code == 200 and response.json():
-        return response.json()[0]
-    
-    # Create new user
-    new_user = {
-        "device_id": device_id,
-        "country": "hr",
-        "language": "hr",
-        "created_at": datetime.now().isoformat(),
-        "last_active": datetime.now().isoformat(),
-        "total_searches": 0,
-        "favorites": [],
-        "conversation": []
+# ----------------------------------------------------------------------------
+# IMAGE STORAGE
+# ----------------------------------------------------------------------------
+
+
+def upload_image(img_bytes, path):
+    url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}"
+
+    headers = {
+        "apikey": Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true",
     }
-    
-    supabase_post("/rest/v1/users", new_user)
-    return new_user
 
-def update_user(device_id, updates):
-    """Update user data"""
-    updates["last_active"] = datetime.now().isoformat()
-    supabase_patch(f"/rest/v1/users?device_id=eq.{quote(device_id)}", updates)
+    try:
+        r = requests.put(url, headers=headers, data=img_bytes, timeout=30)
 
-# ============================================================================
-# API ROUTES
-# ============================================================================
+        if r.status_code in [200, 201]:
+            public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
+            logger.info(f"✅ Image uploaded: {public_url}")
+            return public_url
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
 
-@app.route('/')
+    return None
+
+
+# ----------------------------------------------------------------------------
+# PDF PROCESSOR
+# ----------------------------------------------------------------------------
+
+
+def process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_name):
+    doc = None
+    try:
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        total_products = 0
+
+        for page_num in range(total_pages):
+            try:
+                logger.info(f"Processing page {page_num+1}/{total_pages}")
+
+                page = doc[page_num]
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                img_bytes = pix.tobytes("jpeg")
+                img_b64 = base64.b64encode(img_bytes).decode()
+
+                # Upload image
+                safe_store = store.lower().replace(' ', '_')
+                safe_name = catalogue_name.lower().replace(' ', '_')
+                filename = f"{safe_store}_{safe_name}_page_{str(page_num+1).zfill(3)}.jpg"
+                storage_path = f"{safe_store}/{valid_from}/{filename}"
+                
+                page_url = upload_image(img_bytes, storage_path)
+
+                # Extract products
+                products = extract_products(img_b64, store, page_num + 1)
+
+                # Save products
+                saved = save_products(
+                    products, store, page_num + 1,
+                    page_url, catalogue_name, valid_from, valid_until
+                )
+                
+                total_products += saved
+
+                # Update job progress
+                supabase_patch(
+                    f"/rest/v1/jobs?id=eq.{job_id}",
+                    {
+                        "current_page": page_num + 1,
+                        "total_products": total_products
+                    }
+                )
+
+                logger.info(f"Page {page_num+1} done: {saved} products")
+
+            except Exception as e:
+                logger.exception(f"Page {page_num+1} failed")
+                continue
+
+        # Mark job as done
+        supabase_patch(f"/rest/v1/jobs?id=eq.{job_id}", {"status": "done"})
+        logger.info(f"Job {job_id} completed: {total_products} products")
+        
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {e}")
+        supabase_patch(f"/rest/v1/jobs?id=eq.{job_id}", {"status": "error"})
+        
+    finally:
+        # ✅ FIX: Always clean up temp file
+        if doc:
+            doc.close()
+        try:
+            os.remove(pdf_path)
+            logger.info(f"✅ Cleaned up temp file: {pdf_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete temp file: {e}")
+
+
+# ----------------------------------------------------------------------------
+# API
+# ----------------------------------------------------------------------------
+
+
+@app.route("/")
 def home():
     return jsonify({
         "status": "ok",
-        "message": "katalog.ai is running",
-        "version": "1.0.0"
-    })
-
-@app.route('/debug/health')
-def health():
-    return jsonify({
-        "status": "ok",
-        "time": datetime.now().isoformat(),
-        "supabase_configured": bool(Config.SUPABASE_KEY),
-        "gemini_configured": bool(Config.GEMINI_API_KEY)
-    })
-
-@app.route('/debug/supabase')
-def debug_supabase():
-    """Test Supabase connection"""
-    try:
-        response = supabase_get("/rest/v1/")
-        return jsonify({
-            "status": "connected" if response and response.status_code < 500 else "error",
-            "status_code": response.status_code if response else None
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/country')
-def get_country():
-    """Get Croatia configuration"""
-    return jsonify({
-        "code": "hr",
-        "name": "croatia",
-        "language": "hr",
-        "currency": "€",
-        "date_format": "%d.%m.%Y.",
-        "stores": CROATIA_STORES
-    })
-
-# [REST OF YOUR ROUTES REMAIN THE SAME - upload-tool, upload, status, etc.]
-# Copy the remaining routes from your current file starting from line 400 onward
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
-        
-        if 'candidates' in result:
-            return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            logger.error(f"Gemini error: {result}")
-            return "Došlo je do greške."
-            
-    except Exception as e:
-        logger.error(f"Gemini request failed: {e}")
-        return "Došlo je do greške."
-
-# ============================================================================
-# USER FUNCTIONS
-# ============================================================================
-
-def get_or_create_user(device_id):
-    """Get or create user in database"""
-    response = supabase_get(f"/rest/v1/users?device_id=eq.{quote(device_id)}")
-    
-    if response and response.status_code == 200 and response.json():
-        return response.json()[0]
-    
-    # Create new user
-    new_user = {
-        "device_id": device_id,
-        "country": "hr",
-        "language": "hr",
-        "created_at": datetime.now().isoformat(),
-        "last_active": datetime.now().isoformat(),
-        "total_searches": 0,
-        "favorites": [],
-        "conversation": []
-    }
-    
-    supabase_post("/rest/v1/users", new_user)
-    return new_user
-
-def update_user(device_id, updates):
-    """Update user data"""
-    updates["last_active"] = datetime.now().isoformat()
-    supabase_patch(f"/rest/v1/users?device_id=eq.{quote(device_id)}", updates)
-
-# ============================================================================
-# API ROUTES
-# ============================================================================
-
-@app.route('/')
-def home():
-    return jsonify({
-        "status": "ok",
-        "message": "katalog.ai is running",
+        "service": "katalog.ai",
         "version": "1.0.0",
-        "endpoints": {
-            "GET": [
-                "/",
-                "/api/country",
-                "/api/products",
-                "/api/products/search?q=mlijeko",
-                "/api/page-image/<page_number>",
-                "/upload-tool",
-                "/status/<job_id>",
-                "/debug/health",
-                "/debug/supabase"
-            ],
-            "POST": [
-                "/api/chat",
-                "/api/favorites/add",
-                "/api/favorites/remove",
-                "/upload"
-            ]
-        }
+        "endpoints": ["/api/country", "/api/products", "/api/chat", "/upload-tool"]
     })
 
-@app.route('/debug/health')
-def health():
-    return jsonify({
-        "status": "ok",
-        "time": datetime.now().isoformat(),
-        "supabase_configured": bool(Config.SUPABASE_KEY),
-        "gemini_configured": bool(Config.GEMINI_API_KEY)
-    })
 
-@app.route('/debug/supabase')
-def debug_supabase():
-    """Test Supabase connection"""
-    results = {}
-    
-    # Test with proper headers
-    try:
-        url = f"{Config.SUPABASE_URL}/rest/v1/"
-        headers = {
-            "apikey": Config.SUPABASE_KEY,
-            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.get(url, headers=headers, timeout=5)
-        
-        results['connection'] = {
-            "status_code": response.status_code,
-            "success": response.status_code == 200,
-            "message": "Connected successfully" if response.status_code == 200 else response.text[:100]
-        }
-    except Exception as e:
-        results['connection'] = {"error": str(e)}
-    
-    # Test jobs table
-    try:
-        response = supabase_get("/rest/v1/jobs?limit=1")
-        results['jobs_table'] = {
-            "exists": response is not None,
-            "status_code": response.status_code if response else None
-        }
-    except Exception as e:
-        results['jobs_table'] = {"error": str(e)}
-    
-    return jsonify(results)
-
-@app.route('/api/country')
+@app.route("/api/country")
 def get_country():
-    """Get Croatia configuration"""
     return jsonify({
         "code": "hr",
         "name": "croatia",
@@ -651,167 +432,64 @@ def get_country():
         "stores": CROATIA_STORES
     })
 
-@app.route('/api/products', methods=['GET'])
-def api_get_products():
-    """Get products with filters"""
-    store = request.args.get('store')
-    page = request.args.get('page', type=int)
-    limit = request.args.get('limit', 50, type=int)
+
+@app.route("/api/products")
+def api_products():
+    store = request.args.get("store")
+    query = request.args.get("q")
+    page = request.args.get("page", type=int)
     
     if page:
-        # Get products for specific page
-        params = {
-            "page_number": f"eq.{page}",
-            "limit": limit
-        }
+        params = {"page_number": f"eq.{page}", "limit": 50}
         if store:
             params["store"] = f"eq.{store}"
-        
-        response = supabase_get("/rest/v1/products", params)
-        if response and response.status_code == 200:
-            return jsonify(response.json())
-        return jsonify([])
-    else:
-        # Get all products
-        products = get_products(store, limit=limit)
-        return jsonify(products)
-
-@app.route('/api/products/search', methods=['GET'])
-def api_search_products():
-    """Search products by query"""
-    query = request.args.get('q', '').strip()
-    if not query:
+        r = supabase_get("/rest/v1/products", params)
+        if r and r.status_code == 200:
+            return jsonify(r.json())
         return jsonify([])
     
-    products = get_products(query=query, limit=50)
-    return jsonify(products)
+    return jsonify(get_products(store, query))
 
-@app.route('/api/page-image/<int:page_num>')
-def api_page_image(page_num):
-    """Get image URL for a page"""
-    store = request.args.get('store')
-    
-    if not store:
-        return jsonify({"error": "Store parameter required"}), 400
-    
-    image_url = get_page_image_url(store, page_num)
-    
-    if image_url:
-        return jsonify({
-            "page": page_num,
-            "store": store,
-            "image_url": image_url
-        })
-    
-    return jsonify({"error": "Image not found"}), 404
 
-@app.route('/api/chat', methods=['POST'])
+@app.route("/api/chat", methods=["POST"])
 def api_chat():
-    """Chat endpoint"""
     data = request.json
-    message = data.get('message', '').strip()
-    device_id = request.headers.get('X-Device-ID', request.remote_addr)
+    message = data.get("message", "").strip()
     
     if not message:
         return jsonify({"error": "Message required"}), 400
-    
-    # Search for products
+
     products = get_products(query=message, limit=10)
+    reply = ask_ai(message, products)
     
-    # Prepare context
-    context = "PRONAĐENI PROIZVODI:\n"
-    if products:
-        for p in products[:5]:
-            context += f"- {p.get('store')}: {p.get('product')} - {p.get('sale_price')}€ (str. {p.get('page_number')})\n"
-    else:
-        context += "Nema pronađenih proizvoda.\n"
-    
-    # Get AI response
-    reply = ask_gemini(message, context)
-    
-    # Extract page numbers
+    # Extract page numbers from reply
     page_numbers = re.findall(r'stranic[ea] (\d+)', reply, re.IGNORECASE)
     page_numbers = [int(p) for p in page_numbers if 1 <= int(p) <= 500]
-    
-    # Update user
-    user = get_or_create_user(device_id)
-    update_user(device_id, {
-        "total_searches": user.get('total_searches', 0) + 1,
-        "last_query": message
-    })
-    
+
+    # ✅ NEW: Add share links to products
+    enhanced_products = []
+    for p in products[:5]:
+        product_copy = p.copy()
+        if p.get('id'):
+            product_copy['share_url'] = f"{Config.BASE_URL}/p/{p['id']}"
+        else:
+            product_copy['share_url'] = None
+        enhanced_products.append(product_copy)
+
     return jsonify({
         "reply": reply,
-        "products": products[:5],
+        "products": enhanced_products,
         "page_numbers": page_numbers[:3]
     })
 
-@app.route('/api/favorites/add', methods=['POST'])
-def api_favorites_add():
-    """Add product to favorites"""
-    data = request.json
-    product_id = data.get('product_id')
-    device_id = request.headers.get('X-Device-ID', request.remote_addr)
-    
-    if not product_id:
-        return jsonify({"error": "product_id required"}), 400
-    
-    user = get_or_create_user(device_id)
-    favorites = user.get('favorites', [])
-    
-    if product_id not in favorites:
-        favorites.append(product_id)
-        update_user(device_id, {"favorites": favorites})
-        return jsonify({"success": True, "added": True})
-    
-    return jsonify({"success": True, "added": False})
 
-@app.route('/api/favorites/remove', methods=['POST'])
-def api_favorites_remove():
-    """Remove product from favorites"""
-    data = request.json
-    product_id = data.get('product_id')
-    device_id = request.headers.get('X-Device-ID', request.remote_addr)
-    
-    if not product_id:
-        return jsonify({"error": "product_id required"}), 400
-    
-    user = get_or_create_user(device_id)
-    favorites = user.get('favorites', [])
-    
-    if product_id in favorites:
-        favorites.remove(product_id)
-        update_user(device_id, {"favorites": favorites})
-        return jsonify({"success": True, "removed": True})
-    
-    return jsonify({"success": True, "removed": False})
+# ----------------------------------------------------------------------------
+# UPLOAD TOOL
+# ----------------------------------------------------------------------------
 
-@app.route('/api/favorites', methods=['GET'])
-def api_favorites():
-    """Get user's favorites"""
-    device_id = request.headers.get('X-Device-ID', request.remote_addr)
-    user = get_or_create_user(device_id)
-    favorites = user.get('favorites', [])
-    
-    if not favorites:
-        return jsonify([])
-    
-    # Get favorite products
-    products = []
-    for fav_id in favorites[:50]:
-        response = supabase_get(f"/rest/v1/products?id=eq.{fav_id}")
-        if response and response.status_code == 200 and response.json():
-            products.append(response.json()[0])
-    
-    return jsonify(products)
-
-# ============================================================================
-# UPLOAD ROUTES
-# ============================================================================
 
 @app.route('/upload-tool')
 def upload_tool():
-    """Upload tool interface"""
     return send_from_directory('static', 'upload-tool.html') if os.path.exists('static/upload-tool.html') else UPLOAD_HTML
 
 UPLOAD_HTML = '''<!DOCTYPE html>
@@ -826,7 +504,7 @@ UPLOAD_HTML = '''<!DOCTYPE html>
         .card{background:#1a1a1a;border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid #333}
         label{color:#aaa;font-size:12px;text-transform:uppercase;display:block;margin-bottom:5px}
         input,select{width:100%;padding:12px;background:#222;border:1px solid #444;color:#eee;border-radius:5px;margin-bottom:15px;font-size:16px}
-        button{background:#00ff88;color:#000;border:none;padding:15px 30px;font-size:16px;font-weight:bold;border-radius:5px;cursor:pointer;width:100%}
+        button{background:#00ff88;color:#000;border:none;padding:15px;font-size:16px;font-weight:bold;border-radius:5px;cursor:pointer;width:100%}
         button:hover{background:#00cc66}
         button:disabled{background:#444;color:#888;cursor:not-allowed}
         .progress-bar{background:#222;height:30px;border-radius:5px;margin:20px 0;overflow:hidden;display:none}
@@ -835,18 +513,12 @@ UPLOAD_HTML = '''<!DOCTYPE html>
         .success{color:#00ff88}
         .error{color:#ff5555}
         .info{color:#66ccff}
-        .flex{display:flex;gap:10px}
     </style>
 </head>
 <body>
     <h1>📤 katalog.ai - Upload Catalog</h1>
     
     <div class="card">
-        <label>Country</label>
-        <select id="country">
-            <option value="hr">Croatia (Hrvatska)</option>
-        </select>
-        
         <label>PDF File</label>
         <input type="file" id="file" accept=".pdf">
         
@@ -861,13 +533,10 @@ UPLOAD_HTML = '''<!DOCTYPE html>
         </select>
         
         <label>Valid From (YYYY-MM-DD)</label>
-        <input type="text" id="validFrom" placeholder="2026-03-02" value="2026-03-02">
+        <input type="text" id="validFrom" placeholder="2026-03-02">
         
         <label>Valid Until (empty = 14 days auto)</label>
         <input type="text" id="validUntil" placeholder="2026-03-16">
-        
-        <label>Resume Job ID (optional)</label>
-        <input type="text" id="resumeJob" placeholder="Leave empty for new upload">
         
         <button id="uploadBtn" onclick="upload()">Process Catalog</button>
     </div>
@@ -876,70 +545,55 @@ UPLOAD_HTML = '''<!DOCTYPE html>
         <div class="progress-fill" id="progressFill">0%</div>
     </div>
     
-    <div id="log">Ready. Select a PDF file and click Process.</div>
+    <div id="log">Ready.</div>
 
     <script>
         let pollInterval = null;
+        let totalPages = 0;
         let lastPage = 0;
         let lastProducts = 0;
-        let totalPages = 0;
-        let uploadBtn = document.getElementById('uploadBtn');
         
-        function log(message, type = 'info') {
+        function log(msg, type='info') {
+            const colors = {success:'#00ff88', error:'#ff5555', info:'#66ccff'};
             const logDiv = document.getElementById('log');
-            const colors = {
-                'success': '#00ff88',
-                'error': '#ff5555',
-                'info': '#66ccff'
-            };
-            logDiv.innerHTML += `<span style="color: ${colors[type] || '#eee'}">${message}</span><br>`;
+            logDiv.innerHTML += `<span style="color:${colors[type]||'#eee'}">${msg}</span><br>`;
             logDiv.scrollTop = logDiv.scrollHeight;
         }
         
-        function validateForm() {
+        function validate() {
             const file = document.getElementById('file');
-            const store = document.getElementById('store').value;
-            const validFrom = document.getElementById('validFrom').value;
-            
-            if (!file.files || file.files.length === 0) {
-                log('❌ Please select a PDF file', 'error');
+            if (!file.files || !file.files[0]) {
+                log('❌ Select a PDF file', 'error');
                 return false;
             }
-            
-            if (!store) {
-                log('❌ Please select a store', 'error');
-                return false;
-            }
-            
-            if (!validFrom) {
-                log('❌ Please enter valid from date', 'error');
-                return false;
-            }
-            
             return true;
         }
         
         async function upload() {
-            if (!validateForm()) return;
+            if (!validate()) return;
             
             document.getElementById('log').innerHTML = '';
             
             const file = document.getElementById('file').files[0];
-            const country = document.getElementById('country').value;
             const store = document.getElementById('store').value;
             const validFrom = document.getElementById('validFrom').value;
             let validUntil = document.getElementById('validUntil').value;
-            const resumeJob = document.getElementById('resumeJob').value;
             
-            if (!validUntil) {
-                const d = new Date(validFrom);
-                d.setDate(d.getDate() + 14);
-                validUntil = d.toISOString().split('T')[0];
-                log(`📅 Auto-set valid until: ${validUntil}`, 'info');
+            if (!validFrom) {
+                const today = new Date().toISOString().split('T')[0];
+                document.getElementById('validFrom').value = today;
             }
             
-            uploadBtn.disabled = true;
-            uploadBtn.textContent = 'Processing...';
+            if (!validUntil) {
+                const d = new Date(validFrom || new Date());
+                d.setDate(d.getDate() + 14);
+                validUntil = d.toISOString().split('T')[0];
+                log(`📅 Auto valid until: ${validUntil}`, 'info');
+            }
+            
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = true;
+            btn.textContent = 'Processing...';
             
             document.getElementById('progressBar').style.display = 'block';
             document.getElementById('progressFill').style.width = '0%';
@@ -947,11 +601,9 @@ UPLOAD_HTML = '''<!DOCTYPE html>
             
             const formData = new FormData();
             formData.append('file', file);
-            formData.append('country', country);
             formData.append('store', store);
             formData.append('valid_from', validFrom);
             formData.append('valid_until', validUntil);
-            if (resumeJob) formData.append('resume_job_id', resumeJob);
             
             try {
                 log(`📤 Uploading: ${file.name}`, 'info');
@@ -961,32 +613,21 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                     body: formData
                 });
                 
-                if (!response.ok) {
-                    const error = await response.text();
-                    throw new Error(`HTTP ${response.status}: ${error}`);
-                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 
                 const data = await response.json();
                 
-                if (data.error) {
-                    log(`❌ ${data.error}`, 'error');
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = 'Process Catalog';
-                    return;
-                }
-                
-                totalPages = data.total_pages;
-                log(`✅ Job started! Pages: ${totalPages}`, 'success');
+                totalPages = data.pages;
+                log(`✅ Job started: ${totalPages} pages`, 'success');
                 log(`🆔 Job ID: ${data.job_id}`, 'success');
-                log('─────────────────────────────', 'info');
                 
                 if (pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(() => poll(data.job_id), 2000);
                 
-            } catch (error) {
-                log(`❌ Upload failed: ${error.message}`, 'error');
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = 'Process Catalog';
+            } catch (e) {
+                log(`❌ Upload failed: ${e.message}`, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Process Catalog';
             }
         }
         
@@ -1002,10 +643,9 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                 
                 if (currentPage > lastPage) {
                     for (let i = lastPage + 1; i <= currentPage; i++) {
-                        let line = `📄 Page ${String(i).padStart(3, '0')} / ${totalPages}`;
+                        let line = `📄 Page ${String(i).padStart(3,'0')} / ${totalPages}`;
                         if (i === currentPage) {
-                            const newProducts = currentProducts - lastProducts;
-                            line += `  |  +${newProducts} products  |  total: ${currentProducts}`;
+                            line += `  |  +${currentProducts - lastProducts} products  |  total: ${currentProducts}`;
                         }
                         log(line, 'success');
                     }
@@ -1020,208 +660,110 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                 
                 if (data.status === 'done') {
                     clearInterval(pollInterval);
-                    log('─────────────────────────────', 'info');
-                    log(`✅ DONE! ${data.total_products} products saved!`, 'success');
-                    document.getElementById('progressFill').style.width = '100%';
-                    document.getElementById('progressFill').textContent = '100% COMPLETE';
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = 'Process Another';
-                    
-                } else if (data.status === 'error') {
-                    clearInterval(pollInterval);
-                    log('❌ ERROR - Check server logs', 'error');
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = 'Retry';
+                    log(`✅ DONE! ${currentProducts} products`, 'success');
+                    document.getElementById('uploadBtn').disabled = false;
+                    document.getElementById('uploadBtn').textContent = 'Process Another';
                 }
                 
-            } catch (error) {
-                console.log('Poll error:', error);
+            } catch (e) {
+                console.log('Poll error:', e);
             }
         }
-        
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('validFrom').value = today;
     </script>
 </body>
 </html>'''
 
-@app.route('/upload', methods=['POST'])
-def upload():
-    """Upload and process PDF catalog"""
-    try:
-        import fitz  # PyMuPDF
-    except ImportError:
-        logger.error("PyMuPDF not installed")
-        return jsonify({"error": "PyMuPDF not installed"}), 500
 
-    # Get form data
-    store = request.form.get('store', '').strip()
-    valid_from = request.form.get('valid_from', '').strip()
-    valid_until = request.form.get('valid_until', '').strip()
-    file = request.files.get('file')
-    resume_job_id = request.form.get('resume_job_id', '').strip()
+@app.route("/upload", methods=["POST"])
+def upload():
+    file = request.files.get("file")
+    store = request.form.get("store")
+    valid_from = request.form.get("valid_from", date.today().strftime("%Y-%m-%d"))
+    valid_until = request.form.get("valid_until")
     
-    logger.info(f"Upload request: store={store}, from={valid_from}, until={valid_until}, file={file.filename if file else 'None'}")
-    
-    # Validate
-    if not store or not valid_from:
-        return jsonify({"error": "Missing required fields"}), 400
-    
-    if not file and not resume_job_id:
-        return jsonify({"error": "No file provided"}), 400
+    if not file or not store:
+        return jsonify({"error": "file and store required"}), 400
     
     if not valid_until:
-        try:
-            d = datetime.strptime(valid_from, "%Y-%m-%d")
-            valid_until = (d + timedelta(days=14)).strftime("%Y-%m-%d")
-        except:
-            valid_until = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
+        d = datetime.strptime(valid_from, "%Y-%m-%d")
+        valid_until = (d + timedelta(days=14)).strftime("%Y-%m-%d")
     
-    # Handle resume or new job
-    if resume_job_id:
-        job = get_job(resume_job_id)
-        if job:
-            job_id = resume_job_id
-            start_page = job.get('current_page', 0)
-            total_products_so_far = job.get('total_products', 0)
-            total_pages = job.get('total_pages', 0)
-            catalogue_name = job.get('catalogue_name', '')
-            
-            update_job(job_id, {"status": "processing"})
-        else:
-            return jsonify({"error": "Job ID not found"}), 404
-    else:
-        # Read PDF once and reuse
-        pdf_bytes = file.read()
+    # Save PDF to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        file.save(tmp.name)
+        pdf_path = tmp.name
         catalogue_name = file.filename.replace('.pdf', '')
-        
-        # Count pages
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                tmp.write(pdf_bytes)
-                tmp_path = tmp.name
-            
-            doc = fitz.open(tmp_path)
-            total_pages = len(doc)
-            doc.close()
-            os.unlink(tmp_path)
-        except Exception as e:
-            logger.error(f"Could not read PDF: {e}")
-            return jsonify({"error": f"Could not read PDF: {e}"}), 500
-        
-        # Create new job
-        job_id = str(uuid.uuid4())[:8]
-        start_page = 0
-        total_products_so_far = 0
-        
-        save_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages)
+
+    # Count pages
+    doc = fitz.open(pdf_path)
+    total_pages = len(doc)
+    doc.close()
+
+    # Create job
+    job_id = str(uuid.uuid4())[:8]
     
-    # Start processing in background thread
-    if 'pdf_bytes' in locals() and pdf_bytes:
-        def process():
-            try:
-                import fitz
-                
-                # Save PDF to temp file
-                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                    tmp.write(pdf_bytes)
-                    tmp_path = tmp.name
-                
-                doc = fitz.open(tmp_path)
-                total_products = total_products_so_far
-                
-                for page_num in range(start_page, total_pages):
-                    try:
-                        logger.info(f"Processing page {page_num+1}/{total_pages}")
-                        
-                        # Render page to image
-                        page = doc[page_num]
-                        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                        img_bytes = pix.tobytes("jpeg")
-                        img_b64 = base64.b64encode(img_bytes).decode()
-                        
-                        # Upload image
-                        safe_store = store.lower().replace(' ', '_')
-                        safe_name = catalogue_name.lower().replace(' ', '_')
-                        filename = f"{safe_store}_{safe_name}_page_{str(page_num+1).zfill(3)}.jpg"
-                        storage_path = f"{safe_store}/{valid_from}/{filename}"
-                        
-                        page_url = upload_image(img_bytes, storage_path)
-                        
-                        # Extract products with Gemini
-                        products, _ = extract_products_from_image(img_b64, store, page_num+1)
-                        
-                        # Save products
-                        saved = save_products(
-                            products, store, page_num+1,
-                            page_url, catalogue_name, valid_from, valid_until
-                        )
-                        
-                        total_products += saved
-                        
-                        # Update job progress
-                        update_job(job_id, {
-                            "current_page": page_num + 1,
-                            "total_products": total_products
-                        })
-                        
-                        logger.info(f"Page {page_num+1}/{total_pages} processed: {saved} products")
-                        
-                    except Exception as e:
-                        logger.error(f"Error on page {page_num+1}: {e}")
-                        continue
-                
-                doc.close()
-                os.unlink(tmp_path)
-                
-                # Save catalogue
-                save_catalogue(store, catalogue_name, valid_from, valid_until, None, total_pages, total_products)
-                
-                # Mark job as done
-                update_job(job_id, {"status": "done"})
-                logger.info(f"Job {job_id} completed: {total_products} products")
-                
-            except Exception as e:
-                logger.error(f"Job {job_id} failed: {e}")
-                update_job(job_id, {"status": "error"})
-        
-        thread = threading.Thread(target=process)
-        thread.daemon = True
-        thread.start()
-    else:
-        logger.warning("No PDF bytes to process - resuming existing job?")
-    
-    return jsonify({
-        "job_id": job_id,
+    r = supabase_post("/rest/v1/jobs", {
+        "id": job_id,
+        "store": store,
+        "catalogue_name": catalogue_name,
+        "valid_from": valid_from,
+        "valid_until": valid_until,
         "total_pages": total_pages,
-        "start_page": start_page
+        "current_page": 0,
+        "total_products": 0,
+        "status": "processing",
+        "created_at": datetime.now().isoformat()
+    })
+    
+    if not r or r.status_code >= 300:
+        logger.error("Failed to create job")
+        # Still return job_id - processing will try anyway
+
+    # Start background processing
+    thread = threading.Thread(
+        target=process_catalog,
+        args=(job_id, pdf_path, store, valid_from, valid_until, catalogue_name)
+    )
+    thread.start()
+
+    return jsonify({"job_id": job_id, "pages": total_pages})
+
+
+@app.route("/status/<job_id>")
+def status(job_id):
+    r = supabase_get(f"/rest/v1/jobs?id=eq.{job_id}")
+    if r and r.status_code == 200:
+        data = r.json()
+        if data:
+            return jsonify(data[0])
+    return jsonify({"error": "not found"}), 404
+
+
+@app.route("/debug/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "time": datetime.now().isoformat(),
+        "supabase": bool(Config.SUPABASE_KEY),
+        "gemini": bool(Config.GEMINI_API_KEY)
     })
 
-@app.route('/status/<job_id>')
-def job_status(job_id):
-    """Get job status"""
-    job = get_job(job_id)
-    if job:
-        return jsonify(job)
-    return jsonify({"error": "Job not found"}), 404
 
-# ============================================================================
-# ERROR HANDLERS
-# ============================================================================
+@app.route("/p/<product_id>")
+def product_page(product_id):
+    """Shareable product page"""
+    r = supabase_get(f"/rest/v1/products?id=eq.{product_id}")
+    if r and r.status_code == 200 and r.json():
+        product = r.json()[0]
+        return jsonify(product)
+    return jsonify({"error": "Product not found"}), 404
 
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({"error": "Not found"}), 404
 
-@app.errorhandler(500)
-def server_error(error):
-    logger.error(f"Server error: {error}", exc_info=True)
-    return jsonify({"error": "Internal server error"}), 500
-
-# ============================================================================
+# ----------------------------------------------------------------------------
 # MAIN
-# ============================================================================
+# ----------------------------------------------------------------------------
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Starting katalog.ai on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=True)
