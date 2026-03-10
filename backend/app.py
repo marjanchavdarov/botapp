@@ -55,16 +55,62 @@ CROATIA_STORES = [
 # ============================================================================
 # DATABASE FUNCTIONS
 # ============================================================================
-
+@app.route('/debug/supabase-fixed')
+def debug_supabase_fixed():
+    """Test Supabase connection with proper headers"""
+    import requests
+    
+    results = {}
+    
+    # Test with proper headers
+    try:
+        url = f"{Config.SUPABASE_URL}/rest/v1/"
+        headers = {
+            "apikey": Config.SUPABASE_KEY,
+            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.info(f"🔍 Testing Supabase connection to: {url}")
+        logger.info(f"🔑 Using key: {Config.SUPABASE_KEY[:20]}...")
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        
+        results['test'] = {
+            "status_code": response.status_code,
+            "success": response.status_code == 200,
+            "response": response.text[:200] if response.text else None
+        }
+        
+        if response.status_code == 200:
+            logger.info("✅ Supabase connected successfully!")
+        else:
+            logger.error(f"❌ Supabase returned {response.status_code}: {response.text}")
+            
+    except Exception as e:
+        logger.error(f"❌ Supabase connection error: {e}")
+        results['test'] = {"error": str(e)}
+    
+    return jsonify(results)
+    
 def db_headers():
-    """Supabase database headers"""
-    return {
-        "apikey": Config.SUPABASE_KEY,
-        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
+    """Supabase database headers - FIXED VERSION"""
+    if not Config.SUPABASE_KEY:
+        logger.error("❌ SUPABASE_KEY is empty!")
+        return {}
+    
+    # Simple, clean headers - exactly what Supabase expects
+    headers = {
+        "apikey": Config.SUPABASE_KEY.strip(),  # Remove any whitespace
+        "Authorization": f"Bearer {Config.SUPABASE_KEY.strip()}",
+        "Content-Type": "application/json"
     }
-
+    
+    # Log first few chars for debugging (safe)
+    logger.info(f"🔑 Using API key: {Config.SUPABASE_KEY[:20]}...")
+    logger.info(f"📤 Headers: apikey set, Authorization set")
+    
+    return headers
 def storage_headers(content_type='application/octet-stream'):
     """Supabase storage headers"""
     return {
