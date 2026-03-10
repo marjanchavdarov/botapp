@@ -14,10 +14,15 @@ from urllib.parse import quote, urlparse, urlunparse
 import re
 from functools import wraps
 
+
 from flask import Flask, request, jsonify, send_from_directory, g, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import requests
 from dotenv import load_dotenv
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Load environment variables
 load_dotenv()
@@ -198,6 +203,49 @@ TRANSLATIONS = {
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+# Custom session that handles IP-based URLs with correct Host header
+def create_supabase_session():
+    session = requests.Session()
+    
+    # Add retries
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504]
+    )
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    # Set the Host header for IP-based requests
+    session.headers.update({
+        'Host': 'jwuifezafytihgzepylq.supabase.co'
+    })
+    
+    return session
+
+# Use this session for Supabase requests
+supabase_session = create_supabase_session()
+
+# Update your db_headers() function
+def db_headers():
+    return {
+        "apikey": Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+
+# Create a new function for Supabase requests
+def supabase_request(method, path, **kwargs):
+    url = f"{Config.SUPABASE_URL}{path}"
+    
+    # If using IP address, ensure we have the Host header
+    if '172.64.' in Config.SUPABASE_URL or '104.18.' in Config.SUPABASE_URL:
+        headers = kwargs.get('headers', {})
+        headers['Host'] = 'jwuifezafytihgzepylq.supabase.co'
+        kwargs['headers'] = headers
+    
+    return supabase_session.request(method, url, **kwargs)
+
 
 def get_country_config():
     """Get country configuration based on subdomain or request"""
