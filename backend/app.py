@@ -56,6 +56,7 @@ def sb_headers():
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
         "Content-Type": "application/json",
+        "Prefer": "return=minimal"
     }
 
 
