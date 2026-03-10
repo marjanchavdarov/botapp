@@ -53,46 +53,6 @@ CROATIA_STORES = [
 ]
 
 # ============================================================================
-# DATABASE FUNCTIONS
-# ============================================================================
-@app.route('/debug/supabase-fixed')
-def debug_supabase_fixed():
-    """Test Supabase connection with proper headers"""
-    import requests
-    
-    results = {}
-    
-    # Test with proper headers
-    try:
-        url = f"{Config.SUPABASE_URL}/rest/v1/"
-        headers = {
-            "apikey": Config.SUPABASE_KEY,
-            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        logger.info(f"🔍 Testing Supabase connection to: {url}")
-        logger.info(f"🔑 Using key: {Config.SUPABASE_KEY[:20]}...")
-        
-        response = requests.get(url, headers=headers, timeout=5)
-        
-        results['test'] = {
-            "status_code": response.status_code,
-            "success": response.status_code == 200,
-            "response": response.text[:200] if response.text else None
-        }
-        
-        if response.status_code == 200:
-            logger.info("✅ Supabase connected successfully!")
-        else:
-            logger.error(f"❌ Supabase returned {response.status_code}: {response.text}")
-            
-    except Exception as e:
-        logger.error(f"❌ Supabase connection error: {e}")
-        results['test'] = {"error": str(e)}
-    
-    return jsonify(results)
-    # ============================================================================
 # SUPABASE HELPERS - FIXED (NO RECURSION)
 # ============================================================================
 
@@ -102,6 +62,15 @@ def db_headers():
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
         "Content-Type": "application/json"
+    }
+
+def storage_headers(content_type='application/octet-stream'):
+    """Headers for Supabase storage operations"""
+    return {
+        "apikey": Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type": content_type,
+        "x-upsert": "true"
     }
 
 def supabase_request(method, path, **kwargs):
@@ -516,25 +485,34 @@ def debug_supabase():
     """Test Supabase connection"""
     results = {}
     
-    # Test 1: Basic connection
+    # Test with proper headers
     try:
-        response = supabase_get("/rest/v1/")
+        url = f"{Config.SUPABASE_URL}/rest/v1/"
+        headers = {
+            "apikey": Config.SUPABASE_KEY,
+            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        
         results['connection'] = {
-            "status": "success" if response and response.status_code < 500 else "error",
-            "status_code": response.status_code if response else None
+            "status_code": response.status_code,
+            "success": response.status_code == 200,
+            "message": "Connected successfully" if response.status_code == 200 else response.text[:100]
         }
     except Exception as e:
         results['connection'] = {"error": str(e)}
     
-    # Test 2: Check if tables exist
+    # Test jobs table
     try:
-        response = supabase_get("/rest/v1/products?limit=1")
-        results['products_table'] = {
-            "exists": response and response.status_code < 500,
+        response = supabase_get("/rest/v1/jobs?limit=1")
+        results['jobs_table'] = {
+            "exists": response is not None,
             "status_code": response.status_code if response else None
         }
     except Exception as e:
-        results['products_table'] = {"error": str(e)}
+        results['jobs_table'] = {"error": str(e)}
     
     return jsonify(results)
 
@@ -782,6 +760,7 @@ UPLOAD_HTML = '''<!DOCTYPE html>
         let lastPage = 0;
         let lastProducts = 0;
         let totalPages = 0;
+        let uploadBtn = document.getElementById('uploadBtn');
         
         function log(message, type = 'info') {
             const logDiv = document.getElementById('log');
@@ -836,11 +815,12 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                 log(`📅 Auto-set valid until: ${validUntil}`, 'info');
             }
             
-            const btn = document.getElementById('uploadBtn');
-            btn.disabled = true;
-            btn.textContent = 'Processing...';
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Processing...';
             
             document.getElementById('progressBar').style.display = 'block';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressFill').textContent = '0%';
             
             const formData = new FormData();
             formData.append('file', file);
@@ -867,22 +847,23 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                 
                 if (data.error) {
                     log(`❌ ${data.error}`, 'error');
-                    btn.disabled = false;
-                    btn.textContent = 'Process Catalog';
+                    uploadBtn.disabled = false;
+                    uploadBtn.textContent = 'Process Catalog';
                     return;
                 }
                 
                 totalPages = data.total_pages;
                 log(`✅ Job started! Pages: ${totalPages}`, 'success');
                 log(`🆔 Job ID: ${data.job_id}`, 'success');
+                log('─────────────────────────────', 'info');
                 
                 if (pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(() => poll(data.job_id), 2000);
                 
             } catch (error) {
                 log(`❌ Upload failed: ${error.message}`, 'error');
-                btn.disabled = false;
-                btn.textContent = 'Process Catalog';
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Process Catalog';
             }
         }
         
@@ -920,14 +901,14 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                     log(`✅ DONE! ${data.total_products} products saved!`, 'success');
                     document.getElementById('progressFill').style.width = '100%';
                     document.getElementById('progressFill').textContent = '100% COMPLETE';
-                    btn.disabled = false;
-                    btn.textContent = 'Process Another';
+                    uploadBtn.disabled = false;
+                    uploadBtn.textContent = 'Process Another';
                     
                 } else if (data.status === 'error') {
                     clearInterval(pollInterval);
                     log('❌ ERROR - Check server logs', 'error');
-                    btn.disabled = false;
-                    btn.textContent = 'Retry';
+                    uploadBtn.disabled = false;
+                    uploadBtn.textContent = 'Retry';
                 }
                 
             } catch (error) {
@@ -987,7 +968,7 @@ def upload():
         else:
             return jsonify({"error": "Job ID not found"}), 404
     else:
-        # Read PDF
+        # Read PDF once and reuse
         pdf_bytes = file.read()
         catalogue_name = file.filename.replace('.pdf', '')
         
@@ -1013,9 +994,7 @@ def upload():
         save_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages)
     
     # Start processing in background thread
-    if file:
-        pdf_bytes = file.read()
-        
+    if 'pdf_bytes' in locals() and pdf_bytes:
         def process():
             try:
                 import fitz
@@ -1086,6 +1065,8 @@ def upload():
         thread = threading.Thread(target=process)
         thread.daemon = True
         thread.start()
+    else:
+        logger.warning("No PDF bytes to process - resuming existing job?")
     
     return jsonify({
         "job_id": job_id,
