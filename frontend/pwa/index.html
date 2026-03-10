@@ -1,1 +1,90 @@
-
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#00ff88">
+    <link rel="manifest" href="/manifest.json" id="manifest">
+    <title>katalog.ai</title>
+    <link rel="stylesheet" href="/style.css">
+    
+    <!-- Country-specific assets -->
+    <script src="/config.js"></script>
+    <script src="/translations.js"></script>
+</head>
+<body>
+    <div id="app" class="app">
+        <!-- Header with store selector -->
+        <header class="header">
+            <h1>{{app_name}}</h1>
+            <div class="store-selector" id="storeSelector"></div>
+        </header>
+        
+        <!-- Search -->
+        <div class="search-bar">
+            <input type="text" id="searchInput" placeholder="{{search_placeholder}}">
+        </div>
+        
+        <!-- Main content -->
+        <main id="mainContent" class="main-content"></main>
+        
+        <!-- Chat bubble -->
+        <div class="chat-bubble" id="chatBubble">
+            <span class="chat-icon">💬</span>
+            <span class="chat-badge" id="chatBadge"></span>
+        </div>
+        
+        <!-- Chat panel -->
+        <div class="chat-panel" id="chatPanel">
+            <div class="chat-header">
+                <h3>{{app_name}} {{nav_chat}}</h3>
+                <button class="close-chat" id="closeChat">✕</button>
+            </div>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input">
+                <input type="text" id="chatInput" placeholder="{{chat_placeholder}}">
+                <button id="sendMessage">➤</button>
+            </div>
+        </div>
+        
+        <!-- Bottom navigation -->
+        <nav class="bottom-nav">
+            <button class="nav-item active" data-page="home">
+                <span class="icon">🏠</span>
+                <span>{{nav_home}}</span>
+            </button>
+            <button class="nav-item" data-page="favorites">
+                <span class="icon">❤️</span>
+                <span>{{nav_favorites}}</span>
+                <span class="badge" id="favoritesBadge"></span>
+            </button>
+            <button class="nav-item" data-page="chat">
+                <span class="icon">💬</span>
+                <span>{{nav_chat}}</span>
+                <span class="badge" id="chatBadge"></span>
+            </button>
+            <button class="nav-item" data-page="catalogues">
+                <span class="icon">🛒</span>
+                <span>{{nav_catalogues}}</span>
+            </button>
+            <button class="nav-item" data-page="more">
+                <span class="icon">⚙️</span>
+                <span>{{nav_more}}</span>
+            </button>
+        </nav>
+        
+        <!-- Page viewer modal -->
+        <div class="page-viewer" id="pageViewer">
+            <div class="page-image" id="pageImage"></div>
+            <div class="page-controls">
+                <button class="page-nav" id="prevPage">◀</button>
+                <span id="pageNumber"></span>
+                <button class="page-nav" id="nextPage">▶</button>
+            </div>
+            <button class="close-viewer" id="closeViewer">✕</button>
+        </div>
+    </div>
+    
+    <script src="/app.js"></script>
+</body>
+</html>
