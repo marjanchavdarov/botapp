@@ -549,6 +549,108 @@ def save_catalogue(country_code, store, catalogue_name, valid_from, valid_until,
     except Exception as e:
         logger.error(f"Exception saving catalogue: {e}")
 
+# ============================================================================
+# DEBUG ENDPOINTS - Add these temporarily
+# ============================================================================
+
+@app.route('/debug/health')
+def debug_health():
+    """Basic health check"""
+    return jsonify({
+        "status": "ok",
+        "time": datetime.now().isoformat()
+    })
+
+@app.route('/debug/env')
+def debug_env():
+    """Check environment variables (without exposing values)"""
+    import os
+    return jsonify({
+        "supabase_url_set": bool(os.environ.get('SUPABASE_URL')),
+        "supabase_key_set": bool(os.environ.get('SUPABASE_KEY')),
+        "gemini_key_set": bool(os.environ.get('GEMINI_API_KEY')),
+        "supabase_url_prefix": str(os.environ.get('SUPABASE_URL', ''))[:20] + "..." if os.environ.get('SUPABASE_URL') else None,
+        "python_version": sys.version,
+        "cwd": os.getcwd(),
+        "files_in_cwd": os.listdir('.')[:10]  # First 10 files
+    })
+
+@app.route('/debug/pymupdf')
+def debug_pymupdf():
+    """Test PyMuPDF installation"""
+    try:
+        import fitz
+        return jsonify({
+            "status": "success",
+            "version": fitz.version,
+            "fitz_path": fitz.__file__
+        })
+    except ImportError as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "type": "ImportError"
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "type": type(e).__name__
+        }), 500
+
+@app.route('/debug/supabase')
+def debug_supabase():
+    """Test Supabase connection"""
+    try:
+        headers = db_headers()
+        response = requests.get(
+            f"{Config.SUPABASE_URL}/rest/v1/",
+            headers=headers,
+            timeout=5
+        )
+        return jsonify({
+            "status": "connected" if response.status_code < 500 else "error",
+            "status_code": response.status_code,
+            "response_preview": response.text[:200] if response.text else None
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "type": type(e).__name__
+        }), 500
+
+@app.route('/debug/temp')
+def debug_temp():
+    """Test temporary directory access"""
+    import tempfile
+    try:
+        # Test creating a temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write('test')
+            temp_path = f.name
+        
+        # Test reading it back
+        with open(temp_path, 'r') as f:
+            content = f.read()
+        
+        # Clean up
+        import os
+        os.unlink(temp_path)
+        
+        return jsonify({
+            "status": "success",
+            "temp_dir": tempfile.gettempdir(),
+            "writable": True,
+            "content": content
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "temp_dir": tempfile.gettempdir()
+        }), 500
+
 
 # ============================================================================
 # STORAGE FUNCTIONS
