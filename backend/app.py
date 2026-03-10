@@ -13,6 +13,8 @@ from datetime import datetime, date, timedelta
 from urllib.parse import quote, urlparse, urlunparse
 import re
 import tempfile
+import socket
+import dns.resolver
 
 from flask import Flask, request, jsonify, send_from_directory
 import requests
@@ -25,6 +27,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+
+# Fix DNS issues at startup
+def fix_dns():
+    try:
+        # Pre-resolve Google domains
+        socket.gethostbyname('generativelanguage.googleapis.com')
+        socket.gethostbyname('www.googleapis.com')
+        socket.gethostbyname('jwuifezafytihgzepylq.supabase.co')
+        logger.info("✅ DNS resolved for all services")
+    except Exception as e:
+        logger.error(f"❌ DNS resolution failed: {e}")
+
+fix_dns()
 
 # ============================================================================
 # CONFIGURATION
@@ -53,65 +68,81 @@ CROATIA_STORES = [
 ]
 
 # ============================================================================
-# SUPABASE HELPERS - FIXED (NO RECURSION)
+# SUPABASE HELPERS - DIRECT NO RECURSION
 # ============================================================================
 
-def db_headers():
-    """Simple headers - no recursion possible"""
-    return {
+def supabase_get(path, params=None):
+    """Direct GET request - NO recursion possible"""
+    if not Config.SUPABASE_KEY:
+        logger.error("❌ SUPABASE_KEY not set")
+        return None
+    
+    url = f"{Config.SUPABASE_URL}{path}"
+    headers = {
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
         "Content-Type": "application/json"
     }
+    
+    try:
+        logger.info(f"📡 GET {path}")
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        return response
+    except Exception as e:
+        logger.error(f"❌ GET failed: {e}")
+        return None
 
-def storage_headers(content_type='application/octet-stream'):
-    """Headers for Supabase storage operations"""
+def supabase_post(path, json_data=None):
+    """Direct POST request - NO recursion"""
+    if not Config.SUPABASE_KEY:
+        logger.error("❌ SUPABASE_KEY not set")
+        return None
+    
+    url = f"{Config.SUPABASE_URL}{path}"
+    headers = {
+        "apikey": Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        logger.info(f"📡 POST {path}")
+        response = requests.post(url, headers=headers, json=json_data, timeout=10)
+        return response
+    except Exception as e:
+        logger.error(f"❌ POST failed: {e}")
+        return None
+
+def supabase_patch(path, json_data=None):
+    """Direct PATCH request - NO recursion"""
+    if not Config.SUPABASE_KEY:
+        logger.error("❌ SUPABASE_KEY not set")
+        return None
+    
+    url = f"{Config.SUPABASE_URL}{path}"
+    headers = {
+        "apikey": Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        logger.info(f"📡 PATCH {path}")
+        response = requests.patch(url, headers=headers, json=json_data, timeout=10)
+        return response
+    except Exception as e:
+        logger.error(f"❌ PATCH failed: {e}")
+        return None
+
+# Storage headers
+def storage_headers(content_type='image/jpeg'):
+    """Headers for Supabase storage"""
     return {
         "apikey": Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
         "Content-Type": content_type,
         "x-upsert": "true"
     }
-
-def supabase_request(method, path, **kwargs):
-    """Single function for all requests - NO RECURSION"""
-    if not Config.SUPABASE_KEY:
-        logger.error("❌ SUPABASE_KEY not set")
-        return None
-    
-    url = f"{Config.SUPABASE_URL}{path}"
-    headers = db_headers()
-    
-    # Add any extra headers
-    if 'headers' in kwargs:
-        headers.update(kwargs['headers'])
-        del kwargs['headers']
-    
-    try:
-        logger.info(f"📡 Supabase {method} to {path}")
-        response = requests.request(method, url, headers=headers, timeout=10, **kwargs)
-        return response
-    except Exception as e:
-        logger.error(f"❌ Supabase request failed: {e}")
-        return None
-
-# Simple wrapper functions - these DON'T call themselves
-def supabase_get(path, params=None):
-    """GET request"""
-    return supabase_request('GET', path, params=params)
-
-def supabase_post(path, json=None):
-    """POST request"""
-    return supabase_request('POST', path, json=json)
-
-def supabase_patch(path, json=None):
-    """PATCH request"""
-    return supabase_request('PATCH', path, json=json)
-
-def supabase_delete(path):
-    """DELETE request"""
-    return supabase_request('DELETE', path)
-
 
 # ============================================================================
 # PRODUCT FUNCTIONS
@@ -229,15 +260,11 @@ def upload_image(img_bytes, storage_path):
         logger.error("SUPABASE_KEY not set - cannot upload images")
         return None
     
-    headers = storage_headers('image/jpeg')
+    headers = storage_headers()
     
     try:
-        response = requests.put(
-            f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{storage_path}",
-            headers=headers,
-            data=img_bytes,
-            timeout=30
-        )
+        url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{storage_path}"
+        response = requests.put(url, headers=headers, data=img_bytes, timeout=30)
         
         if response.status_code in [200, 201]:
             public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{storage_path}"
@@ -274,7 +301,6 @@ def extract_products_from_image(img_b64, store, page_num):
     """Use Gemini to extract products from catalog page image"""
     if not Config.GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY not set - using mock data")
-        # Return mock data for testing
         return [
             {
                 "product": "Mlijeko Z'bregov 1L",
@@ -398,6 +424,103 @@ def ask_gemini(message, products_context):
     try:
         response = requests.post(url, json=body, timeout=30)
         result = response.json()
+        
+        if 'candidates' in result:
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            logger.error(f"Gemini error: {result}")
+            return "Došlo je do greške."
+            
+    except Exception as e:
+        logger.error(f"Gemini request failed: {e}")
+        return "Došlo je do greške."
+
+# ============================================================================
+# USER FUNCTIONS
+# ============================================================================
+
+def get_or_create_user(device_id):
+    """Get or create user in database"""
+    response = supabase_get(f"/rest/v1/users?device_id=eq.{quote(device_id)}")
+    
+    if response and response.status_code == 200 and response.json():
+        return response.json()[0]
+    
+    # Create new user
+    new_user = {
+        "device_id": device_id,
+        "country": "hr",
+        "language": "hr",
+        "created_at": datetime.now().isoformat(),
+        "last_active": datetime.now().isoformat(),
+        "total_searches": 0,
+        "favorites": [],
+        "conversation": []
+    }
+    
+    supabase_post("/rest/v1/users", new_user)
+    return new_user
+
+def update_user(device_id, updates):
+    """Update user data"""
+    updates["last_active"] = datetime.now().isoformat()
+    supabase_patch(f"/rest/v1/users?device_id=eq.{quote(device_id)}", updates)
+
+# ============================================================================
+# API ROUTES
+# ============================================================================
+
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "ok",
+        "message": "katalog.ai is running",
+        "version": "1.0.0"
+    })
+
+@app.route('/debug/health')
+def health():
+    return jsonify({
+        "status": "ok",
+        "time": datetime.now().isoformat(),
+        "supabase_configured": bool(Config.SUPABASE_KEY),
+        "gemini_configured": bool(Config.GEMINI_API_KEY)
+    })
+
+@app.route('/debug/supabase')
+def debug_supabase():
+    """Test Supabase connection"""
+    try:
+        response = supabase_get("/rest/v1/")
+        return jsonify({
+            "status": "connected" if response and response.status_code < 500 else "error",
+            "status_code": response.status_code if response else None
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/country')
+def get_country():
+    """Get Croatia configuration"""
+    return jsonify({
+        "code": "hr",
+        "name": "croatia",
+        "language": "hr",
+        "currency": "€",
+        "date_format": "%d.%m.%Y.",
+        "stores": CROATIA_STORES
+    })
+
+# [REST OF YOUR ROUTES REMAIN THE SAME - upload-tool, upload, status, etc.]
+# Copy the remaining routes from your current file starting from line 400 onward
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
         
         if 'candidates' in result:
             return result['candidates'][0]['content']['parts'][0]['text']
