@@ -1,1 +1,46 @@
-
+{
+    "stores": [
+        {
+            "id": "lidl",
+            "name": "Lidl",
+            "logo": "/assets/logos/lidl.png",
+            "color": "#0050aa",
+            "website": "https://lidl.hr"
+        },
+        {
+            "id": "kaufland",
+            "name": "Kaufland",
+            "logo": "/assets/logos/kaufland.png",
+            "color": "#e30613",
+            "website": "https://kaufland.hr"
+        },
+        {
+            "id": "spar",
+            "name": "Spar",
+            "logo": "/assets/logos/spar.png",
+            "color": "#1e6b3b",
+            "website": "https://spar.hr"
+        },
+        {
+            "id": "konzum",
+            "name": "Konzum",
+            "logo": "/assets/logos/konzum.png",
+            "color": "#ed1c24",
+            "website": "https://konzum.hr"
+        },
+        {
+            "id": "dm",
+            "name": "dm",
+            "logo": "/assets/logos/dm.png",
+            "color": "#e31837",
+            "website": "https://dm.hr"
+        },
+        {
+            "id": "plodine",
+            "name": "Plodine",
+            "logo": "/assets/logos/plodine.png",
+            "color": "#009640",
+            "website": "https://plodine.hr"
+        }
+    ]
+}
