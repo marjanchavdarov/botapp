@@ -20,9 +20,26 @@ import time
 import re
 from datetime import datetime, date, timedelta
 
+import ssl
 import requests
 import fitz
 from flask import Flask, request, jsonify, send_from_directory
+from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
+
+
+# ---------------------------------------------------------------------------
+# TLS ADAPTER
+# Render's OpenSSL build fails the default TLS negotiation with Supabase.
+# Forcing TLS 1.2 as the minimum version resolves the handshake failure.
+# ---------------------------------------------------------------------------
+
+class _TLSAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = create_urllib3_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        kwargs["ssl_context"] = ctx
+        super().init_poolmanager(*args, **kwargs)
 
 # ----------------------------------------------------------------------------
 # CONFIG & LOGGING
@@ -58,10 +75,12 @@ CROATIA_STORES = [
 # ----------------------------------------------------------------------------
 
 def _sb_session() -> requests.Session:
-    """Return a requests Session pre-loaded with Supabase auth headers."""
+    """Return a requests Session with Supabase auth headers and forced TLS 1.2+."""
     if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY env vars must be set")
     s = requests.Session()
+    adapter = _TLSAdapter()
+    s.mount("https://", adapter)
     s.headers.update({
         "apikey":        Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
@@ -101,7 +120,9 @@ def _sb_storage_put(path, img_bytes):
         "Content-Type":  "image/jpeg",
         "x-upsert":      "true",
     }
-    r = requests.put(url, headers=headers, data=img_bytes, timeout=30)
+    s = requests.Session()
+    s.mount("https://", _TLSAdapter())
+    r = s.put(url, headers=headers, data=img_bytes, timeout=30)
     r.raise_for_status()
     return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
 
