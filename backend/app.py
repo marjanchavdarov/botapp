@@ -1,11 +1,9 @@
 """
 katalog.ai backend
-Supabase via requests (persistent Session) — avoids the httpx SSL handshake
-failures supabase-py causes on Render's OpenSSL build.
-The recursion issue is fixed at source: fitz doc is closed before any I/O,
-and gthread workers are used instead of eventlet.
+Plain requests to Supabase REST API — no SDK, no special library.
+SSL fix: verify=certifi.where() on every call (Render's system CA bundle is stale).
 
-Install: pip install pymupdf flask requests
+Install: pip install pymupdf flask requests certifi
 Render start command: gunicorn app:app --worker-class gthread -w 1 --threads 4 --bind 0.0.0.0:$PORT
 """
 
@@ -20,31 +18,10 @@ import time
 import re
 from datetime import datetime, date, timedelta
 
-import ssl
 import certifi
 import requests
 import fitz
 from flask import Flask, request, jsonify, send_from_directory
-from requests.adapters import HTTPAdapter
-from urllib3.util.ssl_ import create_urllib3_context
-
-
-# ---------------------------------------------------------------------------
-# TLS ADAPTER
-# Render's OpenSSL rejects Cloudflare's TLS handshake (Supabase sits behind
-# Cloudflare). Root causes:
-#   1. System OpenSSL security level strips cipher suites Cloudflare requires.
-#   2. System CA bundle may be outdated.
-# Fix: use certifi's up-to-date CA bundle + SECLEVEL=1 to allow the full
-# cipher suite list Cloudflare needs.
-# ---------------------------------------------------------------------------
-
-class _TLSAdapter(HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        ctx = ssl.create_default_context(cafile=certifi.where())
-        ctx.set_ciphers("DEFAULT@SECLEVEL=1")
-        kwargs["ssl_context"] = ctx
-        super().init_poolmanager(*args, **kwargs)
 
 # ----------------------------------------------------------------------------
 # CONFIG & LOGGING
@@ -74,60 +51,56 @@ CROATIA_STORES = [
 ]
 
 # ----------------------------------------------------------------------------
-# SUPABASE — requests Session
-# Using a module-level Session gives persistent HTTP connections (faster) and
-# avoids the SSL handshake issues supabase-py/httpx has on Render's OpenSSL.
+# SUPABASE — plain requests
+# verify=certifi.where() fixes SSL handshake failures on Render (stale CA bundle).
 # ----------------------------------------------------------------------------
 
-def _sb_session() -> requests.Session:
-    """Return a requests Session with Supabase auth headers and forced TLS 1.2+."""
-    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_KEY env vars must be set")
-    s = requests.Session()
-    adapter = _TLSAdapter()
-    s.mount("https://", adapter)
-    s.headers.update({
+def _db_headers():
+    return {
         "apikey":        Config.SUPABASE_KEY,
         "Authorization": f"Bearer {Config.SUPABASE_KEY}",
         "Content-Type":  "application/json",
         "Prefer":        "return=minimal",
-    })
-    return s
-
+    }
 
 def _sb_get(path, params=None):
-    s = _sb_session()
-    r = s.get(f"{Config.SUPABASE_URL}{path}", params=params, timeout=20)
+    r = requests.get(
+        f"{Config.SUPABASE_URL}{path}",
+        headers=_db_headers(), params=params,
+        timeout=20, verify=certifi.where()
+    )
     r.raise_for_status()
     return r.json()
 
-
 def _sb_post(path, data):
-    s = _sb_session()
-    r = s.post(f"{Config.SUPABASE_URL}{path}", json=data, timeout=20)
+    r = requests.post(
+        f"{Config.SUPABASE_URL}{path}",
+        headers=_db_headers(), json=data,
+        timeout=20, verify=certifi.where()
+    )
     r.raise_for_status()
     return r
-
 
 def _sb_patch(path, data):
-    s = _sb_session()
-    r = s.patch(f"{Config.SUPABASE_URL}{path}", json=data, timeout=20)
+    r = requests.patch(
+        f"{Config.SUPABASE_URL}{path}",
+        headers=_db_headers(), json=data,
+        timeout=20, verify=certifi.where()
+    )
     r.raise_for_status()
     return r
 
-
 def _sb_storage_put(path, img_bytes):
-    """Upload bytes directly to Supabase Storage via requests."""
-    url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}"
-    headers = {
-        "apikey":        Config.SUPABASE_KEY,
-        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type":  "image/jpeg",
-        "x-upsert":      "true",
-    }
-    s = requests.Session()
-    s.mount("https://", _TLSAdapter())
-    r = s.put(url, headers=headers, data=img_bytes, timeout=30)
+    r = requests.put(
+        f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}",
+        headers={
+            "apikey":        Config.SUPABASE_KEY,
+            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            "Content-Type":  "image/jpeg",
+            "x-upsert":      "true",
+        },
+        data=img_bytes, timeout=30, verify=certifi.where()
+    )
     r.raise_for_status()
     return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
 
