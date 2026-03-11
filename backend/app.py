@@ -1,10 +1,12 @@
 """
 katalog.ai backend
-Uses supabase-py client instead of raw HTTP — cleaner, shallower call stack,
-no manual header/URL plumbing.
+Supabase via requests (persistent Session) — avoids the httpx SSL handshake
+failures supabase-py causes on Render's OpenSSL build.
+The recursion issue is fixed at source: fitz doc is closed before any I/O,
+and gthread workers are used instead of eventlet.
 
-Install: pip install supabase pymupdf flask requests
-Render start command: gunicorn katalog:app --bind 0.0.0.0:$PORT --workers 1 --threads 4
+Install: pip install pymupdf flask requests
+Render start command: gunicorn app:app --worker-class gthread -w 1 --threads 4 --bind 0.0.0.0:$PORT
 """
 
 import os
@@ -21,7 +23,6 @@ from datetime import datetime, date, timedelta
 import requests
 import fitz
 from flask import Flask, request, jsonify, send_from_directory
-from supabase import create_client, Client
 
 # ----------------------------------------------------------------------------
 # CONFIG & LOGGING
@@ -51,16 +52,58 @@ CROATIA_STORES = [
 ]
 
 # ----------------------------------------------------------------------------
-# SUPABASE CLIENT
-# supabase-py uses httpx internally — significantly shallower call stack than
-# requests' urllib3 chain, so no recursion issues alongside PyMuPDF.
+# SUPABASE — requests Session
+# Using a module-level Session gives persistent HTTP connections (faster) and
+# avoids the SSL handshake issues supabase-py/httpx has on Render's OpenSSL.
 # ----------------------------------------------------------------------------
 
-def get_sb() -> Client:
-    """Return a Supabase client. Raises clearly if env vars are missing."""
+def _sb_session() -> requests.Session:
+    """Return a requests Session pre-loaded with Supabase auth headers."""
     if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY env vars must be set")
-    return create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+    s = requests.Session()
+    s.headers.update({
+        "apikey":        Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=minimal",
+    })
+    return s
+
+
+def _sb_get(path, params=None):
+    s = _sb_session()
+    r = s.get(f"{Config.SUPABASE_URL}{path}", params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _sb_post(path, data):
+    s = _sb_session()
+    r = s.post(f"{Config.SUPABASE_URL}{path}", json=data, timeout=20)
+    r.raise_for_status()
+    return r
+
+
+def _sb_patch(path, data):
+    s = _sb_session()
+    r = s.patch(f"{Config.SUPABASE_URL}{path}", json=data, timeout=20)
+    r.raise_for_status()
+    return r
+
+
+def _sb_storage_put(path, img_bytes):
+    """Upload bytes directly to Supabase Storage via requests."""
+    url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}"
+    headers = {
+        "apikey":        Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type":  "image/jpeg",
+        "x-upsert":      "true",
+    }
+    r = requests.put(url, headers=headers, data=img_bytes, timeout=30)
+    r.raise_for_status()
+    return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
 
 
 # ----------------------------------------------------------------------------
@@ -70,24 +113,20 @@ def get_sb() -> Client:
 def get_products(store=None, query=None, limit=50):
     today = date.today().isoformat()
     try:
-        sb = get_sb()
-        q = (
-            sb.table("products")
-            .select("*")
-            .lte("valid_from", today)
-            .gte("valid_until", today)
-            .eq("is_expired", False)
-            .order("store")
-            .order("product")
-            .limit(limit)
-        )
+        params = {
+            "valid_from":  f"lte.{today}",
+            "valid_until": f"gte.{today}",
+            "is_expired":  "eq.false",
+            "limit":       limit,
+            "order":       "store,product",
+        }
         if store:
-            q = q.eq("store", store)
+            params["store"] = f"eq.{store}"
         if query:
             query = re.sub(r"[^a-zA-Z0-9\sčćšđžČĆŠĐŽ]", "", query)
-            q = q.ilike("product", f"%{query}%")
+            params["product"] = f"ilike.*{query}*"
 
-        return q.execute().data or []
+        return _sb_get("/rest/v1/products", params) or []
 
     except Exception as e:
         logger.error(f"get_products failed: {e}")
@@ -123,8 +162,7 @@ def save_products(products, store, page_num, page_url, catalogue_name, valid_fro
         return 0
 
     try:
-        sb = get_sb()
-        sb.table("products").insert(records).execute()
+        _sb_post("/rest/v1/products", records)
         logger.info(f"Saved {len(records)} products from page {page_num}")
         return len(records)
     except Exception as e:
@@ -138,8 +176,7 @@ def save_products(products, store, page_num, page_url, catalogue_name, valid_fro
 
 def create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
     try:
-        sb = get_sb()
-        sb.table("jobs").insert({
+        _sb_post("/rest/v1/jobs", {
             "id":             job_id,
             "store":          store,
             "catalogue_name": catalogue_name,
@@ -150,7 +187,7 @@ def create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pag
             "total_products": 0,
             "status":         "processing",
             "created_at":     datetime.now().isoformat(),
-        }).execute()
+        })
         return True
     except Exception as e:
         logger.error(f"create_job failed: {e}")
@@ -159,17 +196,15 @@ def create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pag
 
 def update_job(job_id, **fields):
     try:
-        sb = get_sb()
-        sb.table("jobs").update(fields).eq("id", job_id).execute()
+        _sb_patch(f"/rest/v1/jobs?id=eq.{job_id}", fields)
     except Exception as e:
         logger.error(f"update_job failed for {job_id}: {e}")
 
 
 def get_job(job_id):
     try:
-        sb = get_sb()
-        result = sb.table("jobs").select("*").eq("id", job_id).execute()
-        return result.data[0] if result.data else None
+        data = _sb_get(f"/rest/v1/jobs?id=eq.{job_id}")
+        return data[0] if data else None
     except Exception as e:
         logger.error(f"get_job failed for {job_id}: {e}")
         return None
@@ -177,21 +212,11 @@ def get_job(job_id):
 
 # ----------------------------------------------------------------------------
 # IMAGE STORAGE
-# supabase-py wraps the Storage API — no manual headers needed.
 # ----------------------------------------------------------------------------
 
 def upload_image(img_bytes, path):
     try:
-        sb = get_sb()
-        sb.storage.from_(Config.STORAGE_BUCKET).upload(
-            path,
-            img_bytes,
-            {"content-type": "image/jpeg", "x-upsert": "true"},
-        )
-        public_url = (
-            f"{Config.SUPABASE_URL}/storage/v1/object/public"
-            f"/{Config.STORAGE_BUCKET}/{path}"
-        )
+        public_url = _sb_storage_put(path, img_bytes)
         logger.info(f"Image uploaded: {public_url}")
         return public_url
     except Exception as e:
@@ -423,11 +448,10 @@ def api_products():
 
     if page:
         try:
-            sb = get_sb()
-            q  = sb.table("products").select("*").eq("page_number", page).limit(50)
+            params = {"page_number": f"eq.{page}", "limit": 50}
             if store:
-                q = q.eq("store", store)
-            return jsonify(q.execute().data or [])
+                params["store"] = f"eq.{store}"
+            return jsonify(_sb_get("/rest/v1/products", params) or [])
         except Exception as e:
             logger.error(f"api_products page query failed: {e}")
             return jsonify([])
@@ -700,10 +724,9 @@ def health():
 @app.route("/p/<product_id>")
 def product_page(product_id):
     try:
-        sb     = get_sb()
-        result = sb.table("products").select("*").eq("id", product_id).execute()
-        if result.data:
-            return jsonify(result.data[0])
+        data = _sb_get(f"/rest/v1/products?id=eq.{product_id}")
+        if data:
+            return jsonify(data[0])
     except Exception as e:
         logger.error(f"product_page failed: {e}")
     return jsonify({"error": "Product not found"}), 404
