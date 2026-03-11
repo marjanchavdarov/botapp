@@ -1,7 +1,7 @@
 """
 katalog.ai backend
 Plain requests to Supabase REST API — no SDK, no special library.
-SSL fix: verify=certifi.where() on every call (Render's system CA bundle is stale).
+SSL fix: verify=False on every call (Render's system CA bundle is stale).
 
 Install: pip install pymupdf flask requests certifi
 Render start command: gunicorn app:app --worker-class gthread -w 1 --threads 4 --bind 0.0.0.0:$PORT
@@ -18,7 +18,6 @@ import time
 import re
 from datetime import datetime, date, timedelta
 
-import certifi
 import requests
 import fitz
 from flask import Flask, request, jsonify, send_from_directory
@@ -52,7 +51,7 @@ CROATIA_STORES = [
 
 # ----------------------------------------------------------------------------
 # SUPABASE — plain requests
-# verify=certifi.where() fixes SSL handshake failures on Render (stale CA bundle).
+# verify=False fixes SSL handshake failures on Render (stale CA bundle).
 # ----------------------------------------------------------------------------
 
 def _db_headers():
@@ -67,7 +66,7 @@ def _sb_get(path, params=None):
     r = requests.get(
         f"{Config.SUPABASE_URL}{path}",
         headers=_db_headers(), params=params,
-        timeout=20, verify=certifi.where()
+        timeout=20, verify=False
     )
     r.raise_for_status()
     return r.json()
@@ -76,7 +75,7 @@ def _sb_post(path, data):
     r = requests.post(
         f"{Config.SUPABASE_URL}{path}",
         headers=_db_headers(), json=data,
-        timeout=20, verify=certifi.where()
+        timeout=20, verify=False
     )
     r.raise_for_status()
     return r
@@ -85,7 +84,7 @@ def _sb_patch(path, data):
     r = requests.patch(
         f"{Config.SUPABASE_URL}{path}",
         headers=_db_headers(), json=data,
-        timeout=20, verify=certifi.where()
+        timeout=20, verify=False
     )
     r.raise_for_status()
     return r
@@ -99,7 +98,7 @@ def _sb_storage_put(path, img_bytes):
             "Content-Type":  "image/jpeg",
             "x-upsert":      "true",
         },
-        data=img_bytes, timeout=30, verify=certifi.where()
+        data=img_bytes, timeout=30, verify=False
     )
     r.raise_for_status()
     return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
@@ -723,6 +722,40 @@ def health():
         "supabase": bool(Config.SUPABASE_KEY),
         "gemini":   bool(Config.GEMINI_API_KEY),
     })
+
+
+@app.route("/debug/supabase")
+def debug_supabase():
+    """Hit this in your browser to test Supabase connectivity."""
+    results = {}
+
+    # Check env vars are set
+    results["SUPABASE_URL_set"]  = bool(Config.SUPABASE_URL)
+    results["SUPABASE_KEY_set"]  = bool(Config.SUPABASE_KEY)
+    results["SUPABASE_URL"]      = Config.SUPABASE_URL or "NOT SET"
+
+    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
+        return jsonify(results), 500
+
+    # Try a simple GET
+    try:
+        r = requests.get(
+            f"{Config.SUPABASE_URL}/rest/v1/jobs?limit=1",
+            headers={
+                "apikey":        Config.SUPABASE_KEY,
+                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            },
+            timeout=10,
+            verify=False,
+        )
+        results["status_code"] = r.status_code
+        results["response"]    = r.text[:300]
+        results["success"]     = r.status_code < 300
+    except Exception as e:
+        results["error"]   = str(e)
+        results["success"] = False
+
+    return jsonify(results)
 
 
 @app.route("/p/<product_id>")
