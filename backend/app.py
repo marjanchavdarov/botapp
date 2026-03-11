@@ -21,6 +21,7 @@ import re
 from datetime import datetime, date, timedelta
 
 import ssl
+import certifi
 import requests
 import fitz
 from flask import Flask, request, jsonify, send_from_directory
@@ -30,14 +31,18 @@ from urllib3.util.ssl_ import create_urllib3_context
 
 # ---------------------------------------------------------------------------
 # TLS ADAPTER
-# Render's OpenSSL build fails the default TLS negotiation with Supabase.
-# Forcing TLS 1.2 as the minimum version resolves the handshake failure.
+# Render's OpenSSL rejects Cloudflare's TLS handshake (Supabase sits behind
+# Cloudflare). Root causes:
+#   1. System OpenSSL security level strips cipher suites Cloudflare requires.
+#   2. System CA bundle may be outdated.
+# Fix: use certifi's up-to-date CA bundle + SECLEVEL=1 to allow the full
+# cipher suite list Cloudflare needs.
 # ---------------------------------------------------------------------------
 
 class _TLSAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
-        ctx = create_urllib3_context()
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        ctx.set_ciphers("DEFAULT@SECLEVEL=1")
         kwargs["ssl_context"] = ctx
         super().init_poolmanager(*args, **kwargs)
 
