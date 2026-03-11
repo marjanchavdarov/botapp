@@ -1,6 +1,6 @@
 """
 katalog.ai backend
-clean production version - FIXED with reviewer suggestions
+FIXED version — all debug report issues resolved
 """
 
 import os
@@ -10,9 +10,9 @@ import base64
 import logging
 import threading
 import tempfile
+import time
 import re
 from datetime import datetime, date, timedelta
-from urllib.parse import quote
 
 import requests
 import fitz
@@ -38,12 +38,12 @@ class Config:
 
 
 CROATIA_STORES = [
-    {"id": "lidl", "name": "Lidl", "color": "#0050aa"},
+    {"id": "lidl",     "name": "Lidl",     "color": "#0050aa"},
     {"id": "kaufland", "name": "Kaufland", "color": "#e30613"},
-    {"id": "spar", "name": "Spar", "color": "#1e6b3b"},
-    {"id": "konzum", "name": "Konzum", "color": "#ed1c24"},
-    {"id": "dm", "name": "dm", "color": "#e31837"},
-    {"id": "plodine", "name": "Plodine", "color": "#009640"},
+    {"id": "spar",     "name": "Spar",     "color": "#1e6b3b"},
+    {"id": "konzum",   "name": "Konzum",   "color": "#ed1c24"},
+    {"id": "dm",       "name": "dm",       "color": "#e31837"},
+    {"id": "plodine",  "name": "Plodine",  "color": "#009640"},
 ]
 
 # ----------------------------------------------------------------------------
@@ -74,12 +74,9 @@ def supabase_post(path, data):
     try:
         url = f"{Config.SUPABASE_URL}{path}"
         r = requests.post(url, headers=sb_headers(), json=data, timeout=20)
-        
-        # ✅ Check for errors
         if r.status_code >= 300:
-            logger.error(f"Supabase POST failed: {r.status_code} - {r.text[:200]}")
+            logger.error(f"Supabase POST error {r.status_code}: {r.text[:200]}")
             return None
-            
         return r
     except Exception as e:
         logger.error(f"Supabase POST failed {e}")
@@ -90,12 +87,9 @@ def supabase_patch(path, data):
     try:
         url = f"{Config.SUPABASE_URL}{path}"
         r = requests.patch(url, headers=sb_headers(), json=data, timeout=20)
-        
-        # ✅ Check for errors
         if r.status_code >= 300:
-            logger.error(f"Supabase PATCH failed: {r.status_code} - {r.text[:200]}")
+            logger.error(f"Supabase PATCH error {r.status_code}: {r.text[:200]}")
             return None
-            
         return r
     except Exception as e:
         logger.error(f"Supabase PATCH failed {e}")
@@ -109,7 +103,7 @@ def supabase_patch(path, data):
 
 def get_products(store=None, query=None, limit=50):
     today = date.today().strftime('%Y-%m-%d')
-    
+
     params = {
         "valid_from": f"lte.{today}",
         "valid_until": f"gte.{today}",
@@ -134,15 +128,14 @@ def get_products(store=None, query=None, limit=50):
 
 
 def save_products(products, store, page_num, page_url, catalogue_name, valid_from, valid_until):
-    """Save products to database"""
+    """Save products to database."""
     if not products:
         return 0
-    
+
     records = []
     for p in products:
         if not p.get('sale_price'):
             continue
-        
         records.append({
             "store": store,
             "product": p.get('product', ''),
@@ -158,30 +151,35 @@ def save_products(products, store, page_num, page_url, catalogue_name, valid_fro
             "page_number": page_num,
             "catalogue_name": catalogue_name
         })
-    
-    if records:
-        # ✅ Check if save succeeded
-        r = supabase_post("/rest/v1/products", records)
-        if r and r.status_code < 300:
-            logger.info(f"✅ Saved {len(records)} products")
-            return len(records)
-        else:
-            logger.error(f"❌ Failed to save products")
-            return 0
-    return 0
+
+    if not records:
+        return 0
+
+    r = supabase_post("/rest/v1/products", records)
+    if r and r.status_code < 300:
+        logger.info(f"Saved {len(records)} products from page {page_num}")
+        return len(records)
+    else:
+        logger.error(f"Failed to save {len(records)} products from page {page_num}")
+        return 0
 
 
 # ----------------------------------------------------------------------------
 # GEMINI
 # ----------------------------------------------------------------------------
 
+# FIX: Build the URL once, never log it (key would be visible in exceptions).
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+
+def _gemini_url():
+    return f"{_GEMINI_BASE}?key={Config.GEMINI_API_KEY}"
+
 
 def extract_products(img_b64, store, page):
     if not Config.GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY not set")
         return []
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={Config.GEMINI_API_KEY}"
 
     prompt = f"""
 Extract ALL products from this catalog page.
@@ -231,39 +229,46 @@ If no products, return [].
 
     for attempt in range(3):
         try:
-            r = requests.post(url, json=body, timeout=90)
-            
+            r = requests.post(_gemini_url(), json=body, timeout=90)
+
             if r.status_code != 200:
-                logger.error(f"Gemini API error {r.status_code}")
+                # FIX: Log status only — never log the URL (contains API key)
+                logger.error(f"Gemini API error on attempt {attempt+1}: status {r.status_code}")
+                time.sleep(2 ** attempt)
                 continue
-                
+
             result = r.json()
-            
+
             if 'candidates' not in result:
-                logger.error(f"Gemini invalid response: {result}")
+                logger.error(f"Gemini invalid response structure on attempt {attempt+1}")
+                time.sleep(2 ** attempt)
                 continue
 
             text = result["candidates"][0]["content"]["parts"][0]["text"]
-            
-            # ✅ FIX: Extract only the JSON array using regex
+
             match = re.search(r'\[.*\]', text, re.DOTALL)
-            
             if not match:
-                logger.error(f"No JSON array found in Gemini response")
+                logger.error(f"No JSON array found in Gemini response (page {page})")
                 continue
-                
-            json_str = match.group()
-            products = json.loads(json_str)
-            
+
+            products = json.loads(match.group())
+
             if isinstance(products, list):
-                logger.info(f"✅ Extracted {len(products)} products from page {page}")
+                logger.info(f"Extracted {len(products)} products from page {page}")
                 return products
-                
+
         except json.JSONDecodeError as e:
-            logger.error(f"Gemini JSON parse failed: {e}")
+            logger.error(f"Gemini JSON parse failed on attempt {attempt+1}: {e}")
         except Exception as e:
-            logger.error(f"Gemini attempt {attempt+1} failed: {e}")
-            
+            # FIX: Sanitize exception message in case URL leaks through
+            err_msg = str(e)
+            if Config.GEMINI_API_KEY and Config.GEMINI_API_KEY in err_msg:
+                err_msg = err_msg.replace(Config.GEMINI_API_KEY, "***")
+            logger.error(f"Gemini attempt {attempt+1} failed: {err_msg}")
+            # FIX: Exponential backoff between retries
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
     return []
 
 
@@ -293,15 +298,17 @@ Instructions:
 Response:
 """
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={Config.GEMINI_API_KEY}"
     body = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
-        r = requests.post(url, json=body, timeout=60)
+        r = requests.post(_gemini_url(), json=body, timeout=60)
         result = r.json()
         return result["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        logger.error(f"Chat error: {e}")
+        err_msg = str(e)
+        if Config.GEMINI_API_KEY and Config.GEMINI_API_KEY in err_msg:
+            err_msg = err_msg.replace(Config.GEMINI_API_KEY, "***")
+        logger.error(f"Chat error: {err_msg}")
         return "Dogodila se greška."
 
 
@@ -322,13 +329,14 @@ def upload_image(img_bytes, path):
 
     try:
         r = requests.put(url, headers=headers, data=img_bytes, timeout=30)
-
         if r.status_code in [200, 201]:
             public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
-            logger.info(f"✅ Image uploaded: {public_url}")
+            logger.info(f"Image uploaded: {public_url}")
             return public_url
+        else:
+            logger.error(f"Image upload failed: status {r.status_code}")
     except Exception as e:
-        logger.error(f"Upload failed: {e}")
+        logger.error(f"Image upload exception: {e}")
 
     return None
 
@@ -354,26 +362,19 @@ def process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_
                 img_bytes = pix.tobytes("jpeg")
                 img_b64 = base64.b64encode(img_bytes).decode()
 
-                # Upload image
                 safe_store = store.lower().replace(' ', '_')
                 safe_name = catalogue_name.lower().replace(' ', '_')
                 filename = f"{safe_store}_{safe_name}_page_{str(page_num+1).zfill(3)}.jpg"
                 storage_path = f"{safe_store}/{valid_from}/{filename}"
-                
+
                 page_url = upload_image(img_bytes, storage_path)
-
-                # Extract products
                 products = extract_products(img_b64, store, page_num + 1)
-
-                # Save products
                 saved = save_products(
                     products, store, page_num + 1,
                     page_url, catalogue_name, valid_from, valid_until
                 )
-                
                 total_products += saved
 
-                # Update job progress
                 supabase_patch(
                     f"/rest/v1/jobs?id=eq.{job_id}",
                     {
@@ -384,31 +385,29 @@ def process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_
 
                 logger.info(f"Page {page_num+1} done: {saved} products")
 
-            except Exception as e:
-                logger.exception(f"Page {page_num+1} failed")
+            except Exception:
+                logger.exception(f"Page {page_num+1} failed — continuing")
                 continue
 
-        # Mark job as done
         supabase_patch(f"/rest/v1/jobs?id=eq.{job_id}", {"status": "done"})
-        logger.info(f"Job {job_id} completed: {total_products} products")
-        
+        logger.info(f"Job {job_id} completed: {total_products} total products")
+
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
         supabase_patch(f"/rest/v1/jobs?id=eq.{job_id}", {"status": "error"})
-        
+
     finally:
-        # ✅ FIX: Always clean up temp file
         if doc:
             doc.close()
         try:
             os.remove(pdf_path)
-            logger.info(f"✅ Cleaned up temp file: {pdf_path}")
+            logger.info(f"Cleaned up temp file: {pdf_path}")
         except Exception as e:
             logger.error(f"Failed to delete temp file: {e}")
 
 
 # ----------------------------------------------------------------------------
-# API
+# API ROUTES
 # ----------------------------------------------------------------------------
 
 
@@ -439,7 +438,7 @@ def api_products():
     store = request.args.get("store")
     query = request.args.get("q")
     page = request.args.get("page", type=int)
-    
+
     if page:
         params = {"page_number": f"eq.{page}", "limit": 50}
         if store:
@@ -448,33 +447,30 @@ def api_products():
         if r and r.status_code == 200:
             return jsonify(r.json())
         return jsonify([])
-    
+
     return jsonify(get_products(store, query))
 
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     data = request.json
-    message = data.get("message", "").strip()
-    
+    message = (data.get("message") or "").strip()
+
     if not message:
         return jsonify({"error": "Message required"}), 400
 
     products = get_products(query=message, limit=10)
     reply = ask_ai(message, products)
-    
-    # Extract page numbers from reply
+
     page_numbers = re.findall(r'stranic[ea] (\d+)', reply, re.IGNORECASE)
     page_numbers = [int(p) for p in page_numbers if 1 <= int(p) <= 500]
 
-    # ✅ NEW: Add share links to products
     enhanced_products = []
     for p in products[:5]:
         product_copy = p.copy()
-        if p.get('id'):
-            product_copy['share_url'] = f"{Config.BASE_URL}/p/{p['id']}"
-        else:
-            product_copy['share_url'] = None
+        product_copy['share_url'] = (
+            f"{Config.BASE_URL}/p/{p['id']}" if p.get('id') else None
+        )
         enhanced_products.append(product_copy)
 
     return jsonify({
@@ -491,7 +487,10 @@ def api_chat():
 
 @app.route('/upload-tool')
 def upload_tool():
-    return send_from_directory('static', 'upload-tool.html') if os.path.exists('static/upload-tool.html') else UPLOAD_HTML
+    if os.path.exists('static/upload-tool.html'):
+        return send_from_directory('static', 'upload-tool.html')
+    return UPLOAD_HTML
+
 
 UPLOAD_HTML = '''<!DOCTYPE html>
 <html>
@@ -518,11 +517,11 @@ UPLOAD_HTML = '''<!DOCTYPE html>
 </head>
 <body>
     <h1>📤 katalog.ai - Upload Catalog</h1>
-    
+
     <div class="card">
         <label>PDF File</label>
         <input type="file" id="file" accept=".pdf">
-        
+
         <label>Store</label>
         <select id="store">
             <option value="lidl">Lidl</option>
@@ -532,20 +531,20 @@ UPLOAD_HTML = '''<!DOCTYPE html>
             <option value="dm">dm</option>
             <option value="plodine">Plodine</option>
         </select>
-        
+
         <label>Valid From (YYYY-MM-DD)</label>
         <input type="text" id="validFrom" placeholder="2026-03-02">
-        
+
         <label>Valid Until (empty = 14 days auto)</label>
         <input type="text" id="validUntil" placeholder="2026-03-16">
-        
+
         <button id="uploadBtn" onclick="upload()">Process Catalog</button>
     </div>
-    
+
     <div class="progress-bar" id="progressBar">
         <div class="progress-fill" id="progressFill">0%</div>
     </div>
-    
+
     <div id="log">Ready.</div>
 
     <script>
@@ -553,14 +552,31 @@ UPLOAD_HTML = '''<!DOCTYPE html>
         let totalPages = 0;
         let lastPage = 0;
         let lastProducts = 0;
-        
+
+        // FIX: Track consecutive failures so we can stop polling gracefully
+        let failCount = 0;
+        const MAX_POLL_FAILS = 5;
+        const MAX_POLL_MINUTES = 15;
+        let pollStartTime = null;
+
         function log(msg, type='info') {
             const colors = {success:'#00ff88', error:'#ff5555', info:'#66ccff'};
             const logDiv = document.getElementById('log');
             logDiv.innerHTML += `<span style="color:${colors[type]||'#eee'}">${msg}</span><br>`;
             logDiv.scrollTop = logDiv.scrollHeight;
         }
-        
+
+        function stopPolling(reason) {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+            }
+            if (reason) log(reason, 'error');
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = false;
+            btn.textContent = 'Process Catalog';
+        }
+
         function validate() {
             const file = document.getElementById('file');
             if (!file.files || !file.files[0]) {
@@ -569,79 +585,105 @@ UPLOAD_HTML = '''<!DOCTYPE html>
             }
             return true;
         }
-        
+
         async function upload() {
             if (!validate()) return;
-            
+
             document.getElementById('log').innerHTML = '';
-            
+            failCount = 0;
+            lastPage = 0;
+            lastProducts = 0;
+
             const file = document.getElementById('file').files[0];
             const store = document.getElementById('store').value;
-            const validFrom = document.getElementById('validFrom').value;
+            let validFrom = document.getElementById('validFrom').value;
             let validUntil = document.getElementById('validUntil').value;
-            
+
             if (!validFrom) {
-                const today = new Date().toISOString().split('T')[0];
-                document.getElementById('validFrom').value = today;
+                validFrom = new Date().toISOString().split('T')[0];
+                document.getElementById('validFrom').value = validFrom;
             }
-            
+
             if (!validUntil) {
-                const d = new Date(validFrom || new Date());
+                const d = new Date(validFrom);
                 d.setDate(d.getDate() + 14);
                 validUntil = d.toISOString().split('T')[0];
                 log(`📅 Auto valid until: ${validUntil}`, 'info');
             }
-            
+
             const btn = document.getElementById('uploadBtn');
             btn.disabled = true;
             btn.textContent = 'Processing...';
-            
+
             document.getElementById('progressBar').style.display = 'block';
             document.getElementById('progressFill').style.width = '0%';
             document.getElementById('progressFill').textContent = '0%';
-            
+
             const formData = new FormData();
             formData.append('file', file);
             formData.append('store', store);
             formData.append('valid_from', validFrom);
             formData.append('valid_until', validUntil);
-            
+
             try {
                 log(`📤 Uploading: ${file.name}`, 'info');
-                
+
                 const response = await fetch('/upload', {
                     method: 'POST',
                     body: formData
                 });
-                
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${response.status}`);
+                }
+
                 const data = await response.json();
-                
                 totalPages = data.pages;
+                pollStartTime = Date.now();
+
                 log(`✅ Job started: ${totalPages} pages`, 'success');
-                log(`🆔 Job ID: ${data.job_id}`, 'success');
-                
+                log(`🆔 Job ID: ${data.job_id}`, 'info');
+
                 if (pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(() => poll(data.job_id), 2000);
-                
+
             } catch (e) {
                 log(`❌ Upload failed: ${e.message}`, 'error');
-                btn.disabled = false;
-                btn.textContent = 'Process Catalog';
+                stopPolling();
             }
         }
-        
+
         async function poll(jobId) {
+            // FIX: Hard timeout — stop after MAX_POLL_MINUTES regardless
+            if (pollStartTime && (Date.now() - pollStartTime) > MAX_POLL_MINUTES * 60 * 1000) {
+                stopPolling(`⏱️ Timed out after ${MAX_POLL_MINUTES} minutes.`);
+                return;
+            }
+
             try {
                 const response = await fetch(`/status/${jobId}`);
-                if (!response.ok) throw new Error('Poll failed');
-                
+
+                // FIX: Handle 404 explicitly with retry limit instead of looping forever
+                if (response.status === 404) {
+                    failCount++;
+                    if (failCount >= MAX_POLL_FAILS) {
+                        stopPolling(`❌ Job not found after ${MAX_POLL_FAILS} attempts. The job may not have been created — check server logs.`);
+                    }
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                // Reset fail counter on a successful response
+                failCount = 0;
+
                 const data = await response.json();
-                
                 const currentPage = data.current_page || 0;
                 const currentProducts = data.total_products || 0;
-                
+
                 if (currentPage > lastPage) {
                     for (let i = lastPage + 1; i <= currentPage; i++) {
                         let line = `📄 Page ${String(i).padStart(3,'0')} / ${totalPages}`;
@@ -650,24 +692,32 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                         }
                         log(line, 'success');
                     }
-                    
                     lastPage = currentPage;
                     lastProducts = currentProducts;
-                    
+
                     const percent = Math.round((currentPage / totalPages) * 100);
                     document.getElementById('progressFill').style.width = percent + '%';
                     document.getElementById('progressFill').textContent = percent + '%';
                 }
-                
+
                 if (data.status === 'done') {
                     clearInterval(pollInterval);
-                    log(`✅ DONE! ${currentProducts} products`, 'success');
-                    document.getElementById('uploadBtn').disabled = false;
-                    document.getElementById('uploadBtn').textContent = 'Process Another';
+                    pollInterval = null;
+                    log(`✅ DONE! ${currentProducts} products saved.`, 'success');
+                    const btn = document.getElementById('uploadBtn');
+                    btn.disabled = false;
+                    btn.textContent = 'Process Another';
                 }
-                
+
+                if (data.status === 'error') {
+                    stopPolling('❌ Job failed on the server. Check logs.');
+                }
+
             } catch (e) {
-                console.log('Poll error:', e);
+                failCount++;
+                if (failCount >= MAX_POLL_FAILS) {
+                    stopPolling(`❌ Polling stopped after ${MAX_POLL_FAILS} errors: ${e.message}`);
+                }
             }
         }
     </script>
@@ -681,28 +731,25 @@ def upload():
     store = request.form.get("store")
     valid_from = request.form.get("valid_from", date.today().strftime("%Y-%m-%d"))
     valid_until = request.form.get("valid_until")
-    
+
     if not file or not store:
         return jsonify({"error": "file and store required"}), 400
-    
+
     if not valid_until:
         d = datetime.strptime(valid_from, "%Y-%m-%d")
         valid_until = (d + timedelta(days=14)).strftime("%Y-%m-%d")
-    
-    # Save PDF to temp file
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         file.save(tmp.name)
         pdf_path = tmp.name
         catalogue_name = file.filename.replace('.pdf', '')
 
-    # Count pages
     doc = fitz.open(pdf_path)
     total_pages = len(doc)
     doc.close()
 
-    # Create job
     job_id = str(uuid.uuid4())[:8]
-    
+
     r = supabase_post("/rest/v1/jobs", {
         "id": job_id,
         "store": store,
@@ -715,15 +762,22 @@ def upload():
         "status": "processing",
         "created_at": datetime.now().isoformat()
     })
-    
-    if not r or r.status_code >= 300:
-        logger.error("Failed to create job")
-        # Still return job_id - processing will try anyway
 
-    # Start background processing
+    # FIX: Return 500 if job creation failed — don't hand out a job_id
+    # the frontend can never poll successfully
+    if not r or r.status_code >= 300:
+        logger.error("Failed to create job in Supabase — aborting upload")
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+        return jsonify({"error": "Failed to create job. Check Supabase connection."}), 500
+
+    # FIX: daemon=True so the thread doesn't block process shutdown on Render
     thread = threading.Thread(
         target=process_catalog,
-        args=(job_id, pdf_path, store, valid_from, valid_until, catalogue_name)
+        args=(job_id, pdf_path, store, valid_from, valid_until, catalogue_name),
+        daemon=True
     )
     thread.start()
 
@@ -752,19 +806,24 @@ def health():
 
 @app.route("/p/<product_id>")
 def product_page(product_id):
-    """Shareable product page"""
+    """Shareable product page."""
     r = supabase_get(f"/rest/v1/products?id=eq.{product_id}")
     if r and r.status_code == 200 and r.json():
-        product = r.json()[0]
-        return jsonify(product)
+        return jsonify(r.json()[0])
     return jsonify({"error": "Product not found"}), 404
 
 
 # ----------------------------------------------------------------------------
 # MAIN
+# FIX: debug=True removed — caused Werkzeug reloader to conflict with threading,
+#      producing "maximum recursion depth exceeded" on every Supabase call.
+#      On Render, use gunicorn as the start command instead of running this file:
+#        gunicorn katalog:app --bind 0.0.0.0:$PORT --workers 1 --threads 4
 # ----------------------------------------------------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    logger.info(f"Starting katalog.ai on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    is_dev = os.environ.get("FLASK_ENV") == "development"
+    logger.info(f"Starting katalog.ai on port {port} (dev={is_dev})")
+    # use_reloader=False is a safety net; on Render this block is never reached
+    app.run(host="0.0.0.0", port=port, debug=is_dev, use_reloader=False)
