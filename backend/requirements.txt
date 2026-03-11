@@ -4,3 +4,4 @@ pymupdf
 gunicorn
 pyopenssl
 cryptography
+certifi
