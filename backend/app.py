@@ -624,16 +624,22 @@ UPLOAD_HTML = '''<!DOCTYPE html>
                 const data = await res.json();
                 const cur = data.current_page || 0, prods = data.total_products || 0;
 
+                // Pick up total_pages from the job record once background thread writes it
+                if (data.total_pages && data.total_pages > 0) totalPages = data.total_pages;
+
                 if (cur > lastPage) {
                     for (let i = lastPage + 1; i <= cur; i++) {
-                        let line = `📄 Page ${String(i).padStart(3,"0")} / ${totalPages}`;
+                        const total = totalPages > 0 ? totalPages : "?";
+                        let line = `📄 Page ${String(i).padStart(3,"0")} / ${total}`;
                         if (i === cur) line += `  |  +${prods - lastProducts} products  |  total: ${prods}`;
                         log(line, "success");
                     }
                     lastPage = cur; lastProducts = prods;
-                    const pct = Math.round(cur / totalPages * 100);
-                    document.getElementById("progressFill").style.width = pct + "%";
-                    document.getElementById("progressFill").textContent = pct + "%";
+                    if (totalPages > 0) {
+                        const pct = Math.round(cur / totalPages * 100);
+                        document.getElementById("progressFill").style.width = pct + "%";
+                        document.getElementById("progressFill").textContent = pct + "%";
+                    }
                 }
 
                 if (data.status === "done") {
@@ -668,38 +674,37 @@ def upload():
         d = datetime.strptime(valid_from, "%Y-%m-%d")
         valid_until = (d + timedelta(days=14)).strftime("%Y-%m-%d")
 
+    # Save PDF — slow for large files. Everything else runs in background
+    # so we respond before Render's 30s proxy timeout.
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         file.save(tmp.name)
         pdf_path       = tmp.name
         catalogue_name = file.filename.replace(".pdf", "")
 
-    # Count pages then immediately release the fitz doc before any network I/O
-    try:
-        doc         = fitz.open(pdf_path)
-        total_pages = len(doc)
-        doc.close()
-        doc = None
-    except Exception as e:
-        logger.error(f"Failed to open PDF: {e}")
-        try: os.remove(pdf_path)
-        except Exception: pass
-        return jsonify({"error": "Could not read PDF"}), 400
-
     job_id = str(uuid.uuid4())[:8]
 
-    if not create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
-        try: os.remove(pdf_path)
-        except Exception: pass
-        return jsonify({"error": "Failed to create job — check Supabase connection"}), 500
+    def run():
+        try:
+            doc         = fitz.open(pdf_path)
+            total_pages = len(doc)
+            doc.close()
+        except Exception as e:
+            logger.error(f"Failed to open PDF: {e}")
+            try: os.remove(pdf_path)
+            except Exception: pass
+            return
 
-    thread = threading.Thread(
-        target=process_catalog,
-        args=(job_id, pdf_path, store, valid_from, valid_until, catalogue_name),
-        daemon=True,
-    )
-    thread.start()
+        if not create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
+            try: os.remove(pdf_path)
+            except Exception: pass
+            return
 
-    return jsonify({"job_id": job_id, "pages": total_pages})
+        process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_name)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    # Respond immediately — frontend polls /status which has total_pages once job is created
+    return jsonify({"job_id": job_id, "pages": 0})
 
 
 @app.route("/status/<job_id>")
