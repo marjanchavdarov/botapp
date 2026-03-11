@@ -2,3 +2,5 @@ flask
 requests
 pymupdf
 gunicorn
+pyopenssl
+cryptography
