@@ -2,4 +2,3 @@ flask
 requests
 pymupdf
 gunicorn
-certifi
