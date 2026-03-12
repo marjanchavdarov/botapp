@@ -1,786 +1,787 @@
-<!DOCTYPE html>
-<html lang="hr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#1A1008">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="katalog.ai">
-  <title>katalog.ai</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg:       #F5F5F5;
-      --card:     #FFFFFF;
-      --ink:      #1A1A1A;
-      --ink2:     #444;
-      --muted:    #888;
-      --accent:   #E8572A;
-      --accent2:  #FF6B3D;
-      --border:   #EBEBEB;
-      --nav-bg:   #FFFFFF;
-      --header:   #1A1A1A;
-      --r:        12px;
-      --shadow:   0 1px 8px rgba(0,0,0,0.07);
+"""
+katalog.ai backend
+Plain requests to Supabase REST API — no SDK, no special library.
+SSL fix: verify=False on every call (Render's system CA bundle is stale).
+
+Install: pip install pymupdf flask requests certifi
+Render start command: gunicorn app:app --worker-class gthread -w 1 --threads 4 --bind 0.0.0.0:$PORT
+"""
+
+import os
+import json
+import uuid
+import base64
+import logging
+import threading
+import tempfile
+import time
+import re
+from datetime import datetime, date, timedelta
+
+import requests
+import fitz
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+
+# ----------------------------------------------------------------------------
+# CONFIG & LOGGING
+# ----------------------------------------------------------------------------
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("katalog")
+
+app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+# Ensure static folder exists so Flask doesn't crash
+os.makedirs("static", exist_ok=True)
+CORS(app)  # Allow all origins — required for frontend/Supabase to call this API
+
+
+class Config:
+    GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
+    SUPABASE_URL    = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY    = os.environ.get("SUPABASE_KEY")
+    STORAGE_BUCKET  = "pages"
+    BASE_URL        = os.environ.get("BASE_URL", "https://botapp-u7qa.onrender.com")
+
+
+CROATIA_STORES = [
+    {"id": "lidl",     "name": "Lidl",     "color": "#0050aa"},
+    {"id": "kaufland", "name": "Kaufland", "color": "#e30613"},
+    {"id": "spar",     "name": "Spar",     "color": "#1e6b3b"},
+    {"id": "konzum",   "name": "Konzum",   "color": "#ed1c24"},
+    {"id": "dm",       "name": "dm",       "color": "#e31837"},
+    {"id": "plodine",  "name": "Plodine",  "color": "#009640"},
+]
+
+# ----------------------------------------------------------------------------
+# SUPABASE — plain requests
+# verify=False fixes SSL handshake failures on Render (stale CA bundle).
+# ----------------------------------------------------------------------------
+
+def _db_headers():
+    return {
+        "apikey":        Config.SUPABASE_KEY,
+        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=minimal",
     }
-    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    html,body{height:100%;background:var(--bg);color:var(--ink);font-family:'Inter',sans-serif;font-size:15px;line-height:1.5;overflow:hidden}
-    #app{display:flex;flex-direction:column;height:100dvh;max-width:430px;margin:0 auto;background:var(--bg)}
 
-    /* ── HEADER ── */
-    header{background:var(--header);padding:12px 16px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between}
-    .logo-wrap{display:flex;align-items:center;gap:10px}
-    .logo-icon{width:36px;height:36px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center}
-    .logo-icon svg{width:20px;height:20px}
-    .logo-text{font-size:17px;font-weight:700;color:#fff;letter-spacing:-.3px}
-    .header-title{font-size:17px;font-weight:700;color:#fff}
-    .hicons{display:flex;gap:4px}
-    .hbtn{width:36px;height:36px;background:rgba(255,255,255,.1);border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#fff;border:none}
-    .hbtn svg{width:18px;height:18px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round}
+def _sb_get(path, params=None):
+    r = requests.get(
+        f"{Config.SUPABASE_URL}{path}",
+        headers=_db_headers(), params=params,
+        timeout=20, verify=False
+    )
+    r.raise_for_status()
+    return r.json()
 
-    /* ── STORE FILTERS ── */
-    .stores-section{background:var(--card);padding:12px 16px 0;flex-shrink:0}
-    .stores-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
-    .stores-label a{font-size:12px;color:var(--accent);font-weight:600;text-decoration:none;text-transform:none;letter-spacing:0}
-    .store-pills{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding-bottom:12px}
-    .store-pills::-webkit-scrollbar{display:none}
-    .store-pill{flex-shrink:0;display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:50px;border:1.5px solid var(--border);background:var(--card);cursor:pointer;transition:all .15s;white-space:nowrap}
-    .store-pill-avatar{width:22px;height:22px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;overflow:hidden;flex-shrink:0}
-    .store-pill-name{font-size:13px;font-weight:600;color:var(--ink2)}
-    .store-pill.active{background:var(--accent);border-color:var(--accent)}
-    .store-pill.active .store-pill-name{color:#fff}
-    .store-pill:active{transform:scale(.95)}
+def _sb_post(path, data):
+    r = requests.post(
+        f"{Config.SUPABASE_URL}{path}",
+        headers=_db_headers(), json=data,
+        timeout=20, verify=False
+    )
+    r.raise_for_status()
+    return r
 
-    /* ── DAY TABS ── */
-    .day-tabs-wrap{background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0}
-    .day-tabs{display:flex;overflow-x:auto;scrollbar-width:none;padding:0 16px}
-    .day-tabs::-webkit-scrollbar{display:none}
-    .day-tab{flex-shrink:0;padding:10px 12px;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;border-bottom:2.5px solid transparent;transition:all .15s;white-space:nowrap}
-    .day-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700}
+def _sb_patch(path, data):
+    r = requests.patch(
+        f"{Config.SUPABASE_URL}{path}",
+        headers=_db_headers(), json=data,
+        timeout=20, verify=False
+    )
+    r.raise_for_status()
+    return r
 
-    /* ── MAIN ── */
-    #main{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
-    #main.hidden{display:none}
-    .view{display:none;padding:12px 12px 90px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;flex:1}
-    .view.active{display:block}
-    /* chat-view is sibling of main — gets flex:1 when active */
-    #chat-view{display:none;flex-direction:column;overflow:hidden;min-height:0}
-    #chat-view.active{display:flex;flex:1;min-height:0}
+def _sb_storage_put(path, img_bytes):
+    r = requests.put(
+        f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}",
+        headers={
+            "apikey":        Config.SUPABASE_KEY,
+            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            "Content-Type":  "image/jpeg",
+            "x-upsert":      "true",
+        },
+        data=img_bytes, timeout=30, verify=False
+    )
+    r.raise_for_status()
+    return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
 
-    /* ── SECTION HEADER ── */
-    .section-hdr{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;padding:0 4px}
-    .section-hdr-title{font-size:18px;font-weight:800;color:var(--ink)}
-    .section-hdr-count{font-size:13px;color:var(--muted)}
-    .section-hdr-link{font-size:13px;color:var(--accent);font-weight:600}
 
-    /* ── PRODUCT CARDS ── */
-    .product-list{display:flex;flex-direction:column;gap:10px}
+# ----------------------------------------------------------------------------
+# PRODUCTS
+# ----------------------------------------------------------------------------
 
-    .pcard{background:var(--card);border-radius:var(--r);border:1px solid var(--border);box-shadow:var(--shadow);display:flex;overflow:hidden;cursor:pointer;transition:transform .15s;position:relative}
-    .pcard:active{transform:scale(.98)}
+def get_products(store=None, query=None, limit=50):
+    today = date.today().isoformat()
+    try:
+        params = {
+            "valid_from":  f"lte.{today}",
+            "valid_until": f"gte.{today}",
+            "is_expired":  "is.false",
+            "limit":       limit,
+            "order":       "store,product",
+        }
+        if store:
+            params["store"] = f"eq.{store}"
+        if query:
+            query = re.sub(r"[^a-zA-Z0-9\sčćšđžČĆŠĐŽ]", "", query)
+            params["product"] = f"ilike.*{query}*"
 
-    .pcard-img{width:110px;min-width:110px;height:120px;background:var(--bg);position:relative;overflow:hidden}
-    .pcard-img img{width:100%;height:100%;object-fit:cover}
-    .pcard-img.no-img{display:flex;align-items:center;justify-content:center;font-size:36px}
-    .disc-badge{position:absolute;top:8px;left:8px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:3px 7px;border-radius:20px;line-height:1}
+        return _sb_get("/rest/v1/products", params) or []
 
-    .pcard-body{flex:1;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
-    .pcard-top{display:flex;justify-content:space-between;align-items:flex-start}
-    .pcard-store{display:flex;align-items:center;gap:5px}
-    .pcard-store-avatar{width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;background:var(--bg);overflow:hidden}
-    .pcard-store-name{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-    .pcard-actions{display:flex;gap:2px}
-    .icon-btn{width:28px;height:28px;border:none;background:none;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:50%;transition:background .15s}
-    .icon-btn:active{background:var(--bg)}
-    .icon-btn svg{width:16px;height:16px;stroke:var(--muted);fill:none;stroke-width:2;stroke-linecap:round;transition:stroke .15s}
-    .icon-btn.saved svg{stroke:var(--accent);fill:var(--accent)}
+    except Exception as e:
+        logger.error(f"get_products failed: {e}")
+        return []
 
-    .pcard-name{font-size:14px;font-weight:600;color:var(--ink);line-height:1.3;margin-top:2px}
-    .pcard-prices{display:flex;align-items:baseline;gap:6px;margin-top:4px}
-    .pcard-sale{font-size:17px;font-weight:700;color:var(--accent)}
-    .pcard-orig{font-size:13px;color:var(--muted);text-decoration:line-through}
-    .pcard-valid{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;margin-top:4px}
-    .pcard-valid svg{width:12px;height:12px;stroke:var(--muted);fill:none;stroke-width:2;flex-shrink:0}
 
-    /* ── MY LIST CARDS (wider image) ── */
-    .lcard{background:var(--card);border-radius:var(--r);border:1px solid var(--border);box-shadow:var(--shadow);display:flex;overflow:hidden;cursor:pointer;transition:transform .15s;position:relative}
-    .lcard:active{transform:scale(.98)}
-    .lcard-img{width:120px;min-width:120px;height:130px;background:var(--bg);position:relative;overflow:hidden}
-    .lcard-img img{width:100%;height:100%;object-fit:cover}
-    .lcard-img.no-img{display:flex;align-items:center;justify-content:center;font-size:36px}
-    .lcard-body{flex:1;padding:10px 12px;display:flex;flex-direction:column;min-width:0}
-    .lcard-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px}
-    .lcard-store{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-    .lcard-valid{font-size:11px;color:var(--muted)}
-    .lcard-name{font-size:14px;font-weight:600;color:var(--ink);line-height:1.3;margin-bottom:6px}
-    .lcard-prices{display:flex;align-items:baseline;gap:6px;margin-bottom:auto}
-    .lcard-sale{font-size:17px;font-weight:700;color:var(--accent)}
-    .lcard-orig{font-size:13px;color:var(--muted);text-decoration:line-through}
-    .lcard-actions{display:flex;gap:6px;margin-top:8px}
-    .lcard-btn{width:30px;height:30px;border:1px solid var(--border);background:none;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s}
-    .lcard-btn:active{background:var(--bg)}
-    .lcard-btn svg{width:15px;height:15px;stroke:var(--muted);fill:none;stroke-width:2;stroke-linecap:round}
-    .lcard-btn.delete svg{stroke:#E53E3E}
+def save_products(products, store, page_num, page_url, catalogue_name, valid_from, valid_until):
+    """Bulk-insert products for one catalogue page."""
+    if not products:
+        return 0
 
-    /* ── CHAT ── */
-    .chat-header{background:var(--header);padding:14px 16px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between}
-    .chat-header-title{font-size:17px;font-weight:700;color:#fff}
+    records = [
+        {
+            "store":            store,
+            "product":          p.get("product", ""),
+            "brand":            p.get("brand"),
+            "quantity":         p.get("quantity"),
+            "original_price":   p.get("original_price"),
+            "sale_price":       p.get("sale_price"),
+            "discount_percent": p.get("discount_percent"),
+            "category":         p.get("category", "Ostalo"),
+            "valid_from":       valid_from,
+            "valid_until":      valid_until,
+            "page_image_url":   page_url,
+            "page_number":      page_num,
+            "catalogue_name":   catalogue_name,
+        }
+        for p in products
+        if p.get("sale_price")
+    ]
 
-    .chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch;background:#F8F8F8}
+    if not records:
+        return 0
 
-    .chat-welcome{display:flex;flex-direction:column;align-items:center;text-align:center;padding:24px 16px 16px}
-    .cw-icon{width:56px;height:56px;background:#FFF0EB;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
-    .cw-icon svg{width:28px;height:28px;stroke:var(--accent);fill:none;stroke-width:1.5;stroke-linecap:round}
-    .cw-title{font-size:18px;font-weight:700;color:var(--ink);margin-bottom:6px}
-    .cw-text{font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:18px;max-width:280px}
-    .suggestions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
-    .sug{padding:8px 14px;background:var(--card);border:1.5px solid var(--border);border-radius:50px;font-size:13px;font-weight:500;color:var(--ink2);cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .15s}
-    .sug svg{width:14px;height:14px;fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round;flex-shrink:0}
-    .sug:active{background:var(--accent);color:#fff;border-color:var(--accent)}
-    .sug:active svg{stroke:#fff}
+    try:
+        _sb_post("/rest/v1/products", records)
+        logger.info(f"Saved {len(records)} products from page {page_num}")
+        return len(records)
+    except Exception as e:
+        logger.error(f"save_products failed on page {page_num}: {e}")
+        return 0
 
-    .msg{max-width:88%;animation:msgIn .2s ease}
-    .msg.user{align-self:flex-end}
-    .msg.bot{align-self:flex-start;display:flex;gap:8px}
-    @keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 
-    .bot-avatar{width:32px;height:32px;border-radius:50%;background:var(--bg);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;align-self:flex-end;font-size:16px}
+# ----------------------------------------------------------------------------
+# JOBS
+# ----------------------------------------------------------------------------
 
-    .msg-inner{display:flex;flex-direction:column;gap:4px;flex:1}
-    .msg-bubble{padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.5}
-    .msg.user .msg-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
-    .msg.bot  .msg-bubble{background:var(--card);color:var(--ink);border:1px solid var(--border);border-bottom-left-radius:4px;box-shadow:var(--shadow)}
-    .msg-time{font-size:11px;color:var(--muted);padding:0 4px}
-    .msg.user .msg-time{text-align:right}
+def create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
+    try:
+        _sb_post("/rest/v1/jobs", {
+            "id":             job_id,
+            "store":          store,
+            "catalogue_name": catalogue_name,
+            "valid_from":     valid_from,
+            "valid_until":    valid_until,
+            "total_pages":    total_pages,
+            "current_page":   0,
+            "total_products": 0,
+            "status":         "processing",
+            "created_at":     datetime.now().isoformat(),
+        })
+        return True
+    except Exception as e:
+        logger.error(f"create_job failed: {e}")
+        return False
 
-    /* product chips in chat */
-    .chat-products-row{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding:4px 0}
-    .chat-products-row::-webkit-scrollbar{display:none}
-    .chat-pchip{flex-shrink:0;width:160px;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;cursor:pointer;box-shadow:var(--shadow);transition:transform .15s;position:relative}
-    .chat-pchip:active{transform:scale(.97)}
-    .chat-pchip-img{width:100%;height:80px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:28px;overflow:hidden;position:relative}
-    .chat-pchip-img img{width:100%;height:100%;object-fit:cover}
-    .chat-pchip-disc{position:absolute;top:6px;left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:12px}
-    .chat-pchip-body{padding:7px 9px}
-    .chat-pchip-name{font-size:12px;font-weight:600;color:var(--ink);line-height:1.3;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-    .chat-pchip-prices{display:flex;align-items:baseline;gap:5px}
-    .chat-pchip-sale{font-size:14px;font-weight:700;color:var(--accent)}
-    .chat-pchip-orig{font-size:11px;color:var(--muted);text-decoration:line-through}
 
-    .typing-ind{display:flex;gap:4px;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:18px;border-bottom-left-radius:4px;width:fit-content;box-shadow:var(--shadow)}
-    .tdot{width:6px;height:6px;background:var(--muted);border-radius:50%;animation:tb 1.2s infinite}
-    .tdot:nth-child(2){animation-delay:.2s}
-    .tdot:nth-child(3){animation-delay:.4s}
-    @keyframes tb{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+def update_job(job_id, **fields):
+    try:
+        _sb_patch(f"/rest/v1/jobs?id=eq.{job_id}", fields)
+    except Exception as e:
+        logger.error(f"update_job failed for {job_id}: {e}")
 
-    .chat-input-wrap{padding:10px 14px;padding-bottom:max(14px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
-    .chat-plus{width:36px;height:36px;background:var(--bg);border:1px solid var(--border);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-    .chat-plus svg{width:18px;height:18px;stroke:var(--muted);fill:none;stroke-width:2.5;stroke-linecap:round}
-    .chat-input{flex:1;padding:10px 16px;background:var(--bg);border:1.5px solid var(--border);border-radius:50px;font-family:'Inter',sans-serif;font-size:14px;color:var(--ink);outline:none;transition:border-color .2s}
-    .chat-input:focus{border-color:var(--accent);background:#fff}
-    .chat-input::placeholder{color:#BDBDBD}
-    .chat-send{width:38px;height:38px;background:var(--accent);border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:transform .15s}
-    .chat-send:active{transform:scale(.9)}
-    .chat-send:disabled{background:#ddd}
-    .chat-send svg{width:17px;height:17px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
-    /* ── DETAIL VIEW ── */
-    #detail-view{display:none;flex-direction:column;height:100%;padding:0;background:var(--bg)}
-    #detail-view.active{display:flex}
-    .detail-header{background:transparent;padding:12px 16px;display:flex;align-items:center;gap:12px;position:absolute;top:0;left:0;right:0;z-index:10}
-    .detail-back{width:36px;height:36px;background:rgba(255,255,255,.9);border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
-    .detail-back svg{width:18px;height:18px;stroke:var(--ink);fill:none;stroke-width:2.5;stroke-linecap:round}
-    .detail-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:90px}
-    .detail-img-wrap{width:100%;aspect-ratio:4/3;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:72px;position:relative;overflow:hidden}
-    .detail-img-wrap img{width:100%;height:100%;object-fit:cover}
-    .detail-store-badge{position:absolute;top:16px;left:16px;width:36px;height:36px;border-radius:50%;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;box-shadow:var(--shadow)}
-    .detail-disc-badge{position:absolute;top:16px;right:16px;background:var(--accent);color:#fff;font-size:13px;font-weight:700;padding:5px 12px;border-radius:20px}
-    .detail-body{background:var(--card);border-radius:20px 20px 0 0;margin-top:-20px;padding:20px 20px 0;position:relative}
-    .detail-name{font-size:20px;font-weight:800;color:var(--ink);line-height:1.25;margin-bottom:4px}
-    .detail-sub{font-size:14px;color:var(--muted);margin-bottom:16px}
-    .detail-price-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px}
-    .detail-prices{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
-    .detail-sale{font-size:30px;font-weight:800;color:var(--accent)}
-    .detail-orig{font-size:16px;color:var(--muted);text-decoration:line-through}
-    .detail-saving{background:#FFF0EB;color:var(--accent);font-size:13px;font-weight:600;padding:4px 12px;border-radius:20px}
-    .detail-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
-    .dinfo{background:var(--bg);border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px}
-    .dinfo-icon{width:32px;height:32px;background:var(--card);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-    .dinfo-icon svg{width:16px;height:16px;stroke:var(--accent);fill:none;stroke-width:2;stroke-linecap:round}
-    .dinfo-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:1px}
-    .dinfo-value{font-size:13px;font-weight:700;color:var(--ink)}
-    .detail-actions{display:flex;gap:8px;padding:0 0 16px}
-    .detail-btn{flex:1;padding:13px;border-radius:12px;border:1.5px solid var(--border);background:none;cursor:pointer;font-size:14px;font-weight:600;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:7px;transition:all .2s;font-family:'Inter',sans-serif}
-    .detail-btn.saved{color:var(--accent);border-color:var(--accent);background:#FFF0EB}
-    .detail-btn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;transition:fill .15s}
-    .detail-btn.saved svg{fill:var(--accent)}
+def get_job(job_id):
+    try:
+        data = _sb_get(f"/rest/v1/jobs?id=eq.{job_id}")
+        return data[0] if data else None
+    except Exception as e:
+        logger.error(f"get_job failed for {job_id}: {e}")
+        return None
 
-    /* ── BOTTOM NAV ── */
-    .bottom-nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;background:var(--nav-bg);display:flex;border-top:1px solid var(--border);z-index:50;padding-bottom:env(safe-area-inset-bottom,0px);box-shadow:0 -2px 12px rgba(0,0,0,.06)}
-    .nav-btn{flex:1;padding:10px 0 13px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;border:none;background:none;color:var(--muted);font-family:'Inter',sans-serif;font-size:11px;font-weight:500;transition:color .15s;position:relative}
-    .nav-btn.active{color:var(--accent)}
-    .nav-btn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round}
-    .nav-badge{position:absolute;top:6px;right:calc(50% - 16px);background:var(--accent);color:#fff;font-size:9px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px}
 
-    /* ── MY LIST HEADER ── */
-    .mylist-header{background:var(--header);padding:14px 16px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between}
-    .mylist-header-title{font-size:17px;font-weight:700;color:#fff}
-    .mylist-count-bar{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0}
-    .mylist-count-text{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
-    .mylist-clear{font-size:13px;color:var(--accent);font-weight:600;cursor:pointer;background:none;border:none;font-family:'Inter',sans-serif}
+# ----------------------------------------------------------------------------
+# IMAGE STORAGE
+# ----------------------------------------------------------------------------
 
-    /* SKELETON */
-    .skeleton{background:linear-gradient(90deg,#F0F0F0 25%,#E0E0E0 50%,#F0F0F0 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:8px}
-    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-    .skel-card{background:var(--card);border-radius:var(--r);border:1px solid var(--border);display:flex;overflow:hidden;height:120px}
-    .skel-img{width:110px;min-width:110px}
-    .skel-body{flex:1;padding:12px;display:flex;flex-direction:column;gap:8px;justify-content:center}
-    .skel-line{height:10px}.w30{width:30%}.w55{width:55%}.w75{width:75%}.w40{width:40%}
+def upload_image(img_bytes, path):
+    try:
+        public_url = _sb_storage_put(path, img_bytes)
+        logger.info(f"Image uploaded: {public_url}")
+        return public_url
+    except Exception as e:
+        logger.error(f"upload_image failed: {e}")
+        return None
 
-    /* TOAST */
-    .toast{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-70px);background:var(--ink);color:#fff;padding:10px 18px;border-radius:50px;font-size:13px;font-weight:500;z-index:300;transition:transform .3s cubic-bezier(.34,1.56,.64,1);white-space:nowrap;pointer-events:none}
-    .toast.show{transform:translateX(-50%) translateY(0)}
 
-    /* EMPTY */
-    .empty{text-align:center;padding:48px 24px;color:var(--muted)}
-    .empty-icon{font-size:48px;margin-bottom:12px}
-    .empty-title{font-size:18px;font-weight:700;color:var(--ink2);margin-bottom:6px}
-    .empty-text{font-size:14px;line-height:1.6}
-  </style>
+# ----------------------------------------------------------------------------
+# GEMINI  (still uses requests — no official Python client for Gemini REST)
+# API key is never logged; scrubbed from any exception messages.
+# ----------------------------------------------------------------------------
+
+_GEMINI_BASE = (
+    "https://generativelanguage.googleapis.com"
+    "/v1beta/models/gemini-2.5-flash:generateContent"
+)
+
+
+def _gemini_url():
+    return f"{_GEMINI_BASE}?key={Config.GEMINI_API_KEY}"
+
+
+def _scrub(text):
+    """Remove the API key from any string before logging."""
+    if Config.GEMINI_API_KEY and Config.GEMINI_API_KEY in text:
+        return text.replace(Config.GEMINI_API_KEY, "***")
+    return text
+
+
+def extract_products(img_b64, store, page):
+    if not Config.GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY not set")
+        return []
+
+    prompt = f"""
+Izvuci SVE proizvode s ove stranice kataloga.
+
+Trgovina: {store}
+Stranica: {page}
+
+Vrati SAMO JSON niz — bez markdowna, bez objašnjenja. Svaki proizvod mora imati:
+- product: naziv na HRVATSKOM jeziku (npr. "Mlijeko 1L", "Piletina prsa", "Pivo svjetlo")
+- brand: naziv brenda ili null
+- sale_price: akcijska cijena u eurima (samo broj, npr. "1.99")
+- original_price: redovna cijena ili null
+- quantity: količina/veličina ili null (npr. "1L", "500g")
+- discount_percent: posto popusta ili null (npr. "20%")
+- category: jedna od [Meso i riba, Mliječni, Kruh i pekarski, Voće i povrće, Pića, Grickalice i slatkiši, Kućanstvo, Osobna njega, Ostalo]
+
+Primjer:
+[{{"product":"Mlijeko 1L","brand":"Vindija","sale_price":"0.99",
+   "original_price":"1.29","quantity":"1L","discount_percent":"23%",
+   "category":"Mliječni"}}]
+
+Ako nema vidljivih proizvoda, vrati [].
+"""
+
+    body = {
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+            {"text": prompt},
+        ]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
+    }
+
+    for attempt in range(3):
+        try:
+            r = requests.post(_gemini_url(), json=body, timeout=90)
+
+            if r.status_code != 200:
+                logger.error(f"Gemini HTTP {r.status_code} on attempt {attempt+1}")
+                time.sleep(2 ** attempt)
+                continue
+
+            result = r.json()
+
+            if "candidates" not in result:
+                logger.error(f"Gemini missing candidates on attempt {attempt+1}")
+                time.sleep(2 ** attempt)
+                continue
+
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+
+            if not match:
+                logger.error(f"No JSON array in Gemini response (page {page})")
+                continue
+
+            products = json.loads(match.group())
+            if isinstance(products, list):
+                logger.info(f"Extracted {len(products)} products from page {page}")
+                return products
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Gemini JSON parse error attempt {attempt+1}: {e}")
+        except Exception as e:
+            logger.error(f"Gemini attempt {attempt+1} failed: {_scrub(str(e))}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    return []
+
+
+def ask_ai(message, products):
+    if not Config.GEMINI_API_KEY:
+        return "Pronašao sam neke proizvode. Upiši broj stranice da vidiš sliku."
+
+    context = "\n".join(
+        f"- {p.get('store')}: {p.get('product')} - {p.get('sale_price')}€ "
+        f"(str. {p.get('page_number')})"
+        for p in products[:5]
+    )
+
+    prompt = f"""You are a helpful shopping assistant for Croatia.
+Today is {date.today().strftime('%d.%m.%Y.')}
+
+User question: {message}
+
+Products found:
+{context}
+
+Instructions:
+- Respond in Croatian
+- Be friendly and helpful
+- Mention store names and page numbers
+- End with "Stranice: X, Y, Z" if products have page numbers
+"""
+
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    try:
+        r = requests.post(_gemini_url(), json=body, timeout=60)
+        result = r.json()
+        return result["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        logger.error(f"ask_ai failed: {_scrub(str(e))}")
+        return "Dogodila se greška."
+
+
+# ----------------------------------------------------------------------------
+# PDF PROCESSOR  (runs in background daemon thread)
+# ----------------------------------------------------------------------------
+
+def process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_name):
+    doc = None
+    try:
+        doc = fitz.open(pdf_path)
+        total_pages    = len(doc)
+        total_products = 0
+
+        for page_num in range(total_pages):
+            try:
+                logger.info(f"Processing page {page_num+1}/{total_pages}")
+
+                page      = doc[page_num]
+                pix       = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                img_bytes = pix.tobytes("jpeg")
+                img_b64   = base64.b64encode(img_bytes).decode()
+
+                safe_store   = store.lower().replace(" ", "_")
+                safe_name    = catalogue_name.lower().replace(" ", "_")
+                filename     = f"{safe_store}_{safe_name}_page_{str(page_num+1).zfill(3)}.jpg"
+                storage_path = f"{safe_store}/{valid_from}/{filename}"
+
+                page_url       = upload_image(img_bytes, storage_path)
+                products       = extract_products(img_b64, store, page_num + 1)
+                saved          = save_products(
+                    products, store, page_num + 1,
+                    page_url, catalogue_name, valid_from, valid_until,
+                )
+                total_products += saved
+
+                update_job(job_id, current_page=page_num + 1, total_products=total_products)
+                logger.info(f"Page {page_num+1} done: {saved} products")
+
+            except Exception:
+                logger.exception(f"Page {page_num+1} failed — skipping")
+                continue
+
+        update_job(job_id, status="done")
+        logger.info(f"Job {job_id} complete: {total_products} products")
+
+    except Exception as e:
+        logger.error(f"Job {job_id} crashed: {e}")
+        update_job(job_id, status="error")
+
+    finally:
+        if doc:
+            doc.close()
+        try:
+            os.remove(pdf_path)
+            logger.info(f"Cleaned up: {pdf_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete temp file: {e}")
+
+
+# ----------------------------------------------------------------------------
+# ROUTES
+# ----------------------------------------------------------------------------
+
+@app.route("/")
+def home():
+    # Try lowercase, then capital I (case-sensitive Linux filesystem)
+    for name in ["index.html", "Index.html"]:
+        try:
+            return send_from_directory(app.static_folder, name)
+        except Exception:
+            continue
+    return jsonify({"status": "ok", "service": "katalog.ai"})
+
+
+@app.route("/api/country")
+def get_country():
+    return jsonify({
+        "code":        "hr",
+        "name":        "croatia",
+        "language":    "hr",
+        "currency":    "€",
+        "date_format": "%d.%m.%Y.",
+        "stores":      CROATIA_STORES,
+    })
+
+
+@app.route("/api/products")
+def api_products():
+    store = request.args.get("store")
+    query = request.args.get("q")
+    page  = request.args.get("page", type=int)
+
+    if page:
+        try:
+            params = {"page_number": f"eq.{page}", "limit": 50}
+            if store:
+                params["store"] = f"eq.{store}"
+            return jsonify(_sb_get("/rest/v1/products", params) or [])
+        except Exception as e:
+            logger.error(f"api_products page query failed: {e}")
+            return jsonify([])
+
+    return jsonify(get_products(store, query))
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    data    = request.json or {}
+    message = data.get("message", "").strip()
+
+    if not message:
+        return jsonify({"error": "Message required"}), 400
+
+    products = get_products(query=message, limit=10)
+    reply    = ask_ai(message, products)
+
+    page_numbers = [
+        int(p) for p in re.findall(r"stranic[ea] (\d+)", reply, re.IGNORECASE)
+        if 1 <= int(p) <= 500
+    ]
+
+    enhanced = [
+        {**p, "share_url": f"{Config.BASE_URL}/p/{p['id']}" if p.get("id") else None}
+        for p in products[:5]
+    ]
+
+    return jsonify({"reply": reply, "products": enhanced, "page_numbers": page_numbers[:3]})
+
+
+# ----------------------------------------------------------------------------
+# UPLOAD TOOL
+# ----------------------------------------------------------------------------
+
+@app.route("/upload-tool")
+def upload_tool():
+    if os.path.exists("static/upload-tool.html"):
+        return send_from_directory("static", "upload-tool.html")
+    return UPLOAD_HTML
+
+
+UPLOAD_HTML = '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>katalog.ai Upload</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box;font-family:monospace}
+        body{background:#111;color:#eee;padding:40px;max-width:800px;margin:0 auto}
+        h1{color:#00ff88;margin-bottom:30px}
+        .card{background:#1a1a1a;border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid #333}
+        label{color:#aaa;font-size:12px;text-transform:uppercase;display:block;margin-bottom:5px}
+        input,select{width:100%;padding:12px;background:#222;border:1px solid #444;color:#eee;border-radius:5px;margin-bottom:15px;font-size:16px}
+        button{background:#00ff88;color:#000;border:none;padding:15px;font-size:16px;font-weight:bold;border-radius:5px;cursor:pointer;width:100%}
+        button:hover{background:#00cc66}
+        button:disabled{background:#444;color:#888;cursor:not-allowed}
+        .progress-bar{background:#222;height:30px;border-radius:5px;margin:20px 0;overflow:hidden;display:none}
+        .progress-fill{background:#00ff88;height:100%;width:0%;transition:width 0.3s;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#000}
+        #log{background:#000;padding:20px;border-radius:5px;font-size:13px;line-height:1.6;max-height:400px;overflow-y:auto;border:1px solid #333}
+    </style>
 </head>
 <body>
-<div id="app">
-
-  <!-- ── HEADER (Akcije) ── -->
-  <header id="main-header">
-    <div class="logo-wrap">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-      </div>
-      <span class="logo-text">katalog.ai</span>
+    <h1>📤 katalog.ai — Upload Catalog</h1>
+    <div class="card">
+        <label>PDF File</label>
+        <input type="file" id="file" accept=".pdf">
+        <label>Store</label>
+        <select id="store">
+            <option value="lidl">Lidl</option>
+            <option value="kaufland">Kaufland</option>
+            <option value="spar">Spar</option>
+            <option value="konzum">Konzum</option>
+            <option value="dm">dm</option>
+            <option value="plodine">Plodine</option>
+        </select>
+        <label>Valid From (YYYY-MM-DD)</label>
+        <input type="text" id="validFrom" placeholder="2026-03-02">
+        <label>Valid Until (empty = 14 days auto)</label>
+        <input type="text" id="validUntil" placeholder="2026-03-16">
+        <button id="uploadBtn" onclick="upload()">Process Catalog</button>
     </div>
-    <div class="hicons">
-      <button class="hbtn"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M21 21l-4.35-4.35"/></svg></button>
-      <button class="hbtn"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+    <div class="progress-bar" id="progressBar">
+        <div class="progress-fill" id="progressFill">0%</div>
     </div>
-  </header>
+    <div id="log">Ready.</div>
 
-  <!-- ── STORE FILTER ── -->
-  <div class="stores-section" id="stores-section">
-    <div class="stores-label">Trgovine <a href="#">Vidi sve →</a></div>
-    <div class="store-pills" id="store-pills">
-      <div class="store-pill active" data-store="" onclick="selectStore('')">
-        <div class="store-pill-avatar" style="background:#FFF0EB;color:var(--accent)">⚡</div>
-        <span class="store-pill-name">Sve</span>
-      </div>
-    </div>
-  </div>
+    <script>
+        let pollInterval = null, totalPages = 0;
+        let lastPage = 0, lastProducts = 0;
+        let failCount = 0, pollStartTime = null;
+        const MAX_FAILS = 5, MAX_MINUTES = 15;
 
-  <!-- ── DAY TABS ── -->
-  <div class="day-tabs-wrap" id="day-tabs-wrap">
-    <div class="day-tabs" id="day-tabs"></div>
-  </div>
+        function log(msg, type="info") {
+            const colors = {success:"#00ff88", error:"#ff5555", info:"#66ccff"};
+            const el = document.getElementById("log");
+            el.innerHTML += `<span style="color:${colors[type]||"#eee"}">${msg}</span><br>`;
+            el.scrollTop = el.scrollHeight;
+        }
 
-  <!-- ── MAIN ── -->
-  <div id="main">
+        function stopPolling(msg) {
+            clearInterval(pollInterval); pollInterval = null;
+            if (msg) log(msg, "error");
+            const btn = document.getElementById("uploadBtn");
+            btn.disabled = false; btn.textContent = "Process Catalog";
+        }
 
-    <!-- DEALS VIEW -->
-    <div id="deals-view" class="view active">
-      <div class="section-hdr">
-        <div class="section-hdr-title">Aktualne Akcije</div>
-        <div class="section-hdr-count" id="products-count"></div>
-      </div>
-      <div class="product-list" id="products-list">
-        <div class="skel-card"><div class="skeleton skel-img"></div><div class="skel-body"><div class="skeleton skel-line w30"></div><div class="skeleton skel-line w75"></div><div class="skeleton skel-line w40"></div><div class="skeleton skel-line w55"></div></div></div>
-        <div class="skel-card"><div class="skeleton skel-img"></div><div class="skel-body"><div class="skeleton skel-line w30"></div><div class="skeleton skel-line w75"></div><div class="skeleton skel-line w40"></div><div class="skeleton skel-line w55"></div></div></div>
-        <div class="skel-card"><div class="skeleton skel-img"></div><div class="skel-body"><div class="skeleton skel-line w30"></div><div class="skeleton skel-line w75"></div><div class="skeleton skel-line w40"></div><div class="skeleton skel-line w55"></div></div></div>
-      </div>
-      <div style="text-align:center;padding:20px;font-size:13px;color:var(--muted)" id="load-more-hint"></div>
-    </div>
+        async function upload() {
+            const file = document.getElementById("file").files?.[0];
+            if (!file) { log("❌ Select a PDF file", "error"); return; }
 
-    <!-- MY LIST VIEW -->
-    <div id="list-view" class="view" style="padding-top:0">
-      <div class="mylist-count-bar">
-        <span class="mylist-count-text" id="list-count-text">0 proizvoda spremljeno</span>
-        <button class="mylist-clear" onclick="clearAll()">Očisti sve</button>
-      </div>
-      <div class="product-list" id="saved-list" style="padding:12px 0 0"></div>
-    </div>
+            document.getElementById("log").innerHTML = "";
+            failCount = 0; lastPage = 0; lastProducts = 0;
 
-  </div><!-- /main -->
+            let validFrom = document.getElementById("validFrom").value
+                         || new Date().toISOString().split("T")[0];
+            let validUntil = document.getElementById("validUntil").value;
+            if (!validUntil) {
+                const d = new Date(validFrom);
+                d.setDate(d.getDate() + 14);
+                validUntil = d.toISOString().split("T")[0];
+                log(`📅 Auto valid until: ${validUntil}`, "info");
+            }
 
-  <!-- CHAT VIEW -->
-  <div id="chat-view">
-      <div class="chat-messages" id="chat-messages">
-        <div class="chat-welcome">
-          <div class="cw-icon">
-            <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 110 20A10 10 0 0112 2z"/><path d="M8 12s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-          </div>
-          <div class="cw-title">Pozdrav! Kako ti mogu pomoći?</div>
-          <div class="cw-text">Pitaj me za trenutne popuste na meso, mliječne proizvode ili omiljene trgovine.</div>
-          <div class="suggestions">
-            <div class="sug" onclick="sendSug('Što je na akciji ovaj tjedan?')"><svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>Akcije</div>
-            <div class="sug" onclick="sendSug('Jeftino meso ili riba?')"><svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>Meso</div>
-            <div class="sug" onclick="sendSug('Najjeftiniji mliječni proizvodi')"><svg viewBox="0 0 24 24"><path d="M8 2h8l2 6H6L8 2z"/><rect x="4" y="8" width="16" height="14" rx="2"/></svg>Mliječni</div>
-            <div class="sug" onclick="sendSug('Najveći popusti ovaj tjedan')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8.56 2.75c4.37 6.03 6.02 9.42 8.03 17.72m2.54-15.38c-3.72 4.35-8.94 5.66-16.88 5.85m19.5 1.9c-3.5-.93-6.63-.82-8.94 0-2.58.92-5.01 2.86-7.44 6.32"/></svg>Popusti</div>
-          </div>
-        </div>
-      </div>
-      <div class="chat-input-wrap">
-        <div class="chat-plus"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
-        <input class="chat-input" id="chat-input" placeholder="Pitaj me nešto..." enterkeyhint="send">
-        <button class="chat-send" id="chat-send">
-          <svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
-        </button>
-      </div>
-    </div>
+            const btn = document.getElementById("uploadBtn");
+            btn.disabled = true; btn.textContent = "Processing...";
+            document.getElementById("progressBar").style.display = "block";
+            document.getElementById("progressFill").style.width = "0%";
+            document.getElementById("progressFill").textContent = "0%";
 
+            const form = new FormData();
+            form.append("file", file);
+            form.append("store", document.getElementById("store").value);
+            form.append("valid_from", validFrom);
+            form.append("valid_until", validUntil);
 
-  <!-- ── BOTTOM NAV ── -->
-  <nav class="bottom-nav">
-    <button class="nav-btn active" id="nav-deals" onclick="showView('deals')">
-      <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      Akcije
-    </button>
-    <button class="nav-btn" id="nav-list" onclick="showView('list')">
-      <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
-      Moj popis
-      <span class="nav-badge" id="list-badge" style="display:none">0</span>
-    </button>
-    <button class="nav-btn" id="nav-chat" onclick="showView('chat')">
-      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-      Chat
-    </button>
-  </nav>
-</div>
+            try {
+                log(`📤 Uploading: ${file.name}`, "info");
+                const res = await fetch("/upload", { method: "POST", body: form });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                totalPages = data.pages;
+                pollStartTime = Date.now();
+                log(`✅ Job started — ${totalPages} pages`, "success");
+                log(`🆔 Job ID: ${data.job_id}`, "info");
+                if (pollInterval) clearInterval(pollInterval);
+                pollInterval = setInterval(() => poll(data.job_id), 2000);
+            } catch(e) {
+                log(`❌ Upload failed: ${e.message}`, "error");
+                stopPolling();
+            }
+        }
 
-<!-- ── PRODUCT DETAIL (full screen) ── -->
-<div id="detail-view" style="position:fixed;inset:0;z-index:80;display:none;flex-direction:column;background:var(--bg);max-width:430px;left:50%;transform:translateX(-50%)">
-  <div class="detail-scroll" id="detail-scroll">
-    <div class="detail-img-wrap" id="detail-img">🛍️
-      <div class="detail-store-badge" id="detail-store-badge">K</div>
-      <div class="detail-disc-badge" id="detail-disc-badge" style="display:none"></div>
-    </div>
-    <div style="position:absolute;top:12px;left:16px;z-index:10">
-      <button class="detail-back" onclick="closeDetail()">
-        <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-      </button>
-    </div>
-    <div class="detail-body" id="detail-body">
-      <div class="detail-name" id="detail-name"></div>
-      <div class="detail-sub" id="detail-sub"></div>
-      <div class="detail-price-label">Akcijska cijena</div>
-      <div class="detail-prices">
-        <div class="detail-sale" id="detail-sale"></div>
-        <div class="detail-orig" id="detail-orig"></div>
-        <div class="detail-saving" id="detail-saving" style="display:none"></div>
-      </div>
-      <div class="detail-info-grid" id="detail-info-grid"></div>
-      <div class="detail-actions">
-        <button class="detail-btn" id="detail-heart-btn" onclick="toggleDetailFav()">
-          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
-          Dodaj na popis
-        </button>
-        <button class="detail-btn" onclick="shareDetail()">
-          <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-          Dijeli
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
+        async function poll(jobId) {
+            if (Date.now() - pollStartTime > MAX_MINUTES * 60000) {
+                stopPolling(`⏱️ Timed out after ${MAX_MINUTES} minutes.`); return;
+            }
+            try {
+                const res = await fetch(`/status/${jobId}`);
+                if (res.status === 404) {
+                    if (++failCount >= MAX_FAILS)
+                        stopPolling("❌ Job not found — check server logs.");
+                    return;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                failCount = 0;
 
-<div class="toast" id="toast"></div>
+                const data = await res.json();
+                const cur = data.current_page || 0, prods = data.total_products || 0;
 
-<script>
-const API = 'https://botapp-u7qa.onrender.com';
-const EMOJIS = {'Meat and Fish':'🥩','Dairy':'🥛','Bread and Bakery':'🍞','Fruit and Vegetables':'🥦','Drinks':'🥤','Snacks and Sweets':'🍫','Household':'🧹','Personal Care':'🧴'};
-const STORE_COLORS = {konzum:'#E8001C',lidl:'#0050AA',spar:'#00833E',kaufland:'#E30613',tommy:'#FF6B00',plodine:'#7B2082'};
+                // Pick up total_pages from the job record once background thread writes it
+                if (data.total_pages && data.total_pages > 0) totalPages = data.total_pages;
 
-let currentStore = '';
-let currentDay   = '';
-let allProducts  = [];
-let savedItems   = JSON.parse(localStorage.getItem('katalog_saved') || '[]');
-let detailProduct = null;
+                if (cur > lastPage) {
+                    for (let i = lastPage + 1; i <= cur; i++) {
+                        const total = totalPages > 0 ? totalPages : "?";
+                        let line = `📄 Page ${String(i).padStart(3,"0")} / ${total}`;
+                        if (i === cur) line += `  |  +${prods - lastProducts} products  |  total: ${prods}`;
+                        log(line, "success");
+                    }
+                    lastPage = cur; lastProducts = prods;
+                    if (totalPages > 0) {
+                        const pct = Math.round(cur / totalPages * 100);
+                        document.getElementById("progressFill").style.width = pct + "%";
+                        document.getElementById("progressFill").textContent = pct + "%";
+                    }
+                }
 
-// ── INIT ──
-document.addEventListener('DOMContentLoaded', () => {
-  buildDayTabs();
-  loadStores();
-  loadProducts();
-  setupChat();
-  updateBadge();
-});
+                if (data.status === "done") {
+                    clearInterval(pollInterval); pollInterval = null;
+                    log(`✅ DONE! ${prods} products saved.`, "success");
+                    document.getElementById("uploadBtn").disabled = false;
+                    document.getElementById("uploadBtn").textContent = "Process Another";
+                }
+                if (data.status === "error") stopPolling("❌ Job failed — check server logs.");
 
-// ── DAY TABS ──
-function buildDayTabs() {
-  const c = document.getElementById('day-tabs');
-  const labels = ['Sve','Pon','Uto','Sri','Čet','Pet','Sub'];
-  const todayIdx = [0,2,3,4,5,6,1][new Date().getDay()]; // 0=Sun mapped
-  labels.forEach((l, i) => {
-    const tab = document.createElement('div');
-    tab.className = 'day-tab' + (i === 0 ? ' active' : '');
-    tab.textContent = l + (i > 0 && i === todayIdx ? ' ●' : '');
-    tab.onclick = () => { document.querySelectorAll('.day-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); currentDay = i === 0 ? '' : l.replace(' ●',''); loadProducts(); };
-    c.appendChild(tab);
-  });
-}
-
-// ── STORES ──
-async function loadStores() {
-  try {
-    const r = await fetch(`${API}/api/country`);
-    const data = await r.json();
-    const pills = document.getElementById('store-pills');
-    (data.stores || []).forEach(s => {
-      const pill = document.createElement('div');
-      pill.className = 'store-pill';
-      pill.dataset.store = s.id;
-      const color = STORE_COLORS[s.id] || '#888';
-      pill.innerHTML = `<div class="store-pill-avatar" style="background:${color}20;color:${color};font-size:10px;font-weight:700">${s.name[0].toUpperCase()}</div><span class="store-pill-name">${s.name}</span>`;
-      pill.onclick = () => selectStore(s.id);
-      pills.appendChild(pill);
-    });
-  } catch(e) {}
-}
-
-function selectStore(id) {
-  currentStore = id;
-  document.querySelectorAll('.store-pill').forEach(p => p.classList.toggle('active', p.dataset.store === id));
-  loadProducts();
-}
-
-// ── PRODUCTS ──
-async function loadProducts() {
-  const list = document.getElementById('products-list');
-  list.innerHTML = `
-    <div class="skel-card"><div class="skeleton skel-img"></div><div class="skel-body"><div class="skeleton skel-line w30"></div><div class="skeleton skel-line w75"></div><div class="skeleton skel-line w40"></div><div class="skeleton skel-line w55"></div></div></div>
-    <div class="skel-card"><div class="skeleton skel-img"></div><div class="skel-body"><div class="skeleton skel-line w30"></div><div class="skeleton skel-line w75"></div><div class="skeleton skel-line w40"></div><div class="skeleton skel-line w55"></div></div></div>
-    <div class="skel-card"><div class="skeleton skel-img"></div><div class="skel-body"><div class="skeleton skel-line w30"></div><div class="skeleton skel-line w75"></div><div class="skeleton skel-line w40"></div><div class="skeleton skel-line w55"></div></div></div>`;
-
-  try {
-    let url = `${API}/api/products?limit=100`;
-    if (currentStore) url += `&store=${currentStore}`;
-    const r = await fetch(url);
-    allProducts = await r.json();
-
-    let filtered = allProducts;
-    if (currentDay) {
-      const dayMap = {Pon:1,Uto:2,Sri:3,Čet:4,Pet:5,Sub:6,Ned:0};
-      const td = dayMap[currentDay];
-      if (td !== undefined) {
-        filtered = allProducts.filter(p => {
-          if (!p.valid_from || !p.valid_until) return true;
-          const from = new Date(p.valid_from), to = new Date(p.valid_until), d = new Date(from);
-          while (d <= to) { if (d.getDay() === td) return true; d.setDate(d.getDate()+1); }
-          return false;
-        });
-      }
-    }
-
-    document.getElementById('products-count').textContent = filtered.length ? `${filtered.length} proizvoda` : '';
-    document.getElementById('load-more-hint').textContent = filtered.length ? 'Učitavanje novih ponuda...' : '';
-
-    if (!filtered.length) {
-      list.innerHTML = `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">Nema rezultata</div><div class="empty-text">Pokušajte s drugom trgovinom ili danom</div></div>`;
-      return;
-    }
-    list.innerHTML = filtered.map(p => pcardHTML(p)).join('');
-  } catch(e) {
-    list.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">Greška pri učitavanju</div><div class="empty-text">Provjerite vezu i pokušajte ponovo</div></div>`;
-  }
-}
-
-function pcardHTML(p) {
-  const emoji = EMOJIS[p.category] || '🛍️';
-  const disc = p.discount_percent ? p.discount_percent.replace(/[^0-9]/g,'') : '';
-  const fmtDate = d => d ? d.split('-').reverse().join('.') : '';
-  const isSaved = savedItems.some(s => s.id === p.id);
-  const color = STORE_COLORS[p.store] || '#888';
-  const enc = encodeURIComponent(JSON.stringify(p));
-
-  return `<div class="pcard" onclick="openDetail(decodeURIComponent('${enc}'))">
-    <div class="pcard-img ${p.page_image_url ? '' : 'no-img'}">
-      ${p.page_image_url ? `<img src="${p.page_image_url}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='${emoji}';this.parentElement.classList.add('no-img')">` : emoji}
-      ${disc ? `<div class="disc-badge">-${disc}%</div>` : ''}
-    </div>
-    <div class="pcard-body">
-      <div class="pcard-top">
-        <div class="pcard-store">
-          <div class="pcard-store-avatar" style="background:${color}20;color:${color}">${(p.store||'K')[0].toUpperCase()}</div>
-          <span class="pcard-store-name">${(p.store||'').toUpperCase()}</span>
-        </div>
-        <div class="pcard-actions">
-          <button class="icon-btn ${isSaved ? 'saved' : ''}" onclick="event.stopPropagation();toggleFav('${p.id}',this)" data-id="${p.id}">
-            <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z" ${isSaved ? 'fill="currentColor" stroke="none"' : ''}/></svg>
-          </button>
-          <button class="icon-btn" onclick="event.stopPropagation();shareProduct(decodeURIComponent('${enc}'))">
-            <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-          </button>
-        </div>
-      </div>
-      <div class="pcard-name">${p.product}</div>
-      <div class="pcard-prices">
-        <span class="pcard-sale">${p.sale_price}€</span>
-        ${p.original_price ? `<span class="pcard-orig">${p.original_price}€</span>` : ''}
-      </div>
-      ${p.valid_until ? `<div class="pcard-valid"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Vrijedi do ${fmtDate(p.valid_until)}</div>` : ''}
-    </div>
-  </div>`;
-}
-
-// ── DETAIL ──
-function openDetail(jsonStr) {
-  const p = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-  detailProduct = p;
-  const emoji = EMOJIS[p.category] || '🛍️';
-  const disc = p.discount_percent ? p.discount_percent.replace(/[^0-9]/g,'') : '';
-  const color = STORE_COLORS[p.store] || '#888';
-
-  // Image
-  const imgWrap = document.getElementById('detail-img');
-  if (p.page_image_url) {
-    imgWrap.innerHTML = `<img src="${p.page_image_url}" alt="" style="width:100%;height:100%;object-fit:cover">`;
-  } else {
-    imgWrap.textContent = emoji;
-  }
-
-  // Re-add overlays
-  imgWrap.innerHTML += `<div class="detail-store-badge" style="color:${color};font-weight:700">${(p.store||'K')[0].toUpperCase()}</div>`;
-  if (disc) imgWrap.innerHTML += `<div class="detail-disc-badge">-${disc}%</div>`;
-  // re-add back button
-  document.getElementById('detail-view').querySelector('.detail-back').parentElement.remove?.();
-  const backWrap = document.createElement('div');
-  backWrap.style.cssText = 'position:absolute;top:12px;left:16px;z-index:10';
-  backWrap.innerHTML = `<button class="detail-back" onclick="closeDetail()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg></button>`;
-  document.getElementById('detail-scroll').prepend(backWrap);
-
-  document.getElementById('detail-name').textContent = p.product;
-  document.getElementById('detail-sub').textContent  = [p.brand, p.quantity].filter(Boolean).join(' · ');
-  document.getElementById('detail-sale').textContent = `${p.sale_price}€`;
-  document.getElementById('detail-orig').textContent = p.original_price ? `${p.original_price}€` : '';
-
-  const savingEl = document.getElementById('detail-saving');
-  if (p.original_price && p.sale_price) {
-    const saved = (parseFloat(p.original_price) - parseFloat(p.sale_price)).toFixed(2);
-    savingEl.textContent = `Ušteda ${saved}€`;
-    savingEl.style.display = '';
-  } else { savingEl.style.display = 'none'; }
-
-  const fmt = d => d ? d.split('-').reverse().join('.') : '';
-  document.getElementById('detail-info-grid').innerHTML = [
-    p.catalogue_name ? `<div class="dinfo"><div class="dinfo-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg></div><div><div class="dinfo-label">Katalog</div><div class="dinfo-value">${p.catalogue_name.slice(0,18)}</div></div></div>` : '',
-    p.page_number ? `<div class="dinfo"><div class="dinfo-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div><div><div class="dinfo-label">Stranica</div><div class="dinfo-value">${p.page_number}</div></div></div>` : '',
-    p.valid_until ? `<div class="dinfo" style="grid-column:1/-1"><div class="dinfo-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div><div><div class="dinfo-label">Vrijedi do</div><div class="dinfo-value">${fmt(p.valid_until)}</div></div></div>` : '',
-  ].join('');
-
-  const isSaved = savedItems.some(s => s.id === p.id);
-  const hBtn = document.getElementById('detail-heart-btn');
-  hBtn.classList.toggle('saved', isSaved);
-  hBtn.querySelector('svg path').setAttribute('fill', isSaved ? 'currentColor' : 'none');
-  hBtn.childNodes[hBtn.childNodes.length-1].textContent = isSaved ? ' Dodano' : ' Dodaj na popis';
-
-  const dv = document.getElementById('detail-view');
-  dv.style.display = 'flex';
-  dv.style.flexDirection = 'column';
-  document.getElementById('detail-scroll').scrollTop = 0;
-}
-
-function closeDetail() {
-  document.getElementById('detail-view').style.display = 'none';
-}
-
-function toggleDetailFav() {
-  if (!detailProduct) return;
-  toggleFav(detailProduct.id, null);
-  const isSaved = savedItems.some(s => s.id === detailProduct.id);
-  const hBtn = document.getElementById('detail-heart-btn');
-  hBtn.classList.toggle('saved', isSaved);
-  hBtn.querySelector('svg path').setAttribute('fill', isSaved ? 'currentColor' : 'none');
-  hBtn.childNodes[hBtn.childNodes.length-1].textContent = isSaved ? ' Dodano' : ' Dodaj na popis';
-  const rowBtn = document.querySelector(`.icon-btn[data-id="${detailProduct.id}"]`);
-  if (rowBtn) { rowBtn.classList.toggle('saved', isSaved); rowBtn.querySelector('path').setAttribute('fill', isSaved ? 'currentColor' : 'none'); rowBtn.querySelector('path').setAttribute('stroke', isSaved ? 'none' : 'currentColor'); }
-}
-
-function shareDetail() { if (detailProduct) shareProduct(detailProduct); }
-
-// ── FAVORITES ──
-function toggleFav(id, btn) {
-  const idx = savedItems.findIndex(s => s.id === id);
-  if (idx >= 0) {
-    savedItems.splice(idx, 1);
-    showToast('Uklonjeno s popisa');
-  } else {
-    const p = allProducts.find(p => p.id === id) || detailProduct;
-    if (p) { savedItems.push(p); showToast('✓ Dodano na popis'); }
-  }
-  localStorage.setItem('katalog_saved', JSON.stringify(savedItems));
-  updateBadge();
-  if (btn) {
-    const isSaved = savedItems.some(s => s.id === id);
-    btn.classList.toggle('saved', isSaved);
-    const path = btn.querySelector('path');
-    if (path) { path.setAttribute('fill', isSaved ? 'currentColor' : 'none'); path.setAttribute('stroke', isSaved ? 'none' : 'currentColor'); }
-  }
-  if (document.getElementById('list-view').classList.contains('active')) renderSaved();
-}
-
-function clearAll() {
-  if (!savedItems.length) return;
-  savedItems = [];
-  localStorage.setItem('katalog_saved', JSON.stringify(savedItems));
-  updateBadge();
-  renderSaved();
-  showToast('Popis je očišćen');
-}
-
-function updateBadge() {
-  const b = document.getElementById('list-badge');
-  b.textContent = savedItems.length;
-  b.style.display = savedItems.length ? 'flex' : 'none';
-}
-
-function renderSaved() {
-  const list = document.getElementById('saved-list');
-  document.getElementById('list-count-text').textContent = `${savedItems.length} PROIZVODA SPREMLJENO`;
-  if (!savedItems.length) {
-    list.innerHTML = `<div class="empty"><div class="empty-icon">🤍</div><div class="empty-title">Popis je prazan</div><div class="empty-text">Dodajte proizvode pritiskom na srce</div></div>`;
-    return;
-  }
-  list.innerHTML = savedItems.map(p => lcardHTML(p)).join('');
-}
-
-function lcardHTML(p) {
-  const emoji = EMOJIS[p.category] || '🛍️';
-  const disc = p.discount_percent ? p.discount_percent.replace(/[^0-9]/g,'') : '';
-  const fmt = d => d ? d.split('-').reverse().join('.') : '';
-  const enc = encodeURIComponent(JSON.stringify(p));
-  return `<div class="lcard" onclick="openDetail(decodeURIComponent('${enc}'))">
-    <div class="lcard-img ${p.page_image_url ? '' : 'no-img'}">
-      ${p.page_image_url ? `<img src="${p.page_image_url}" alt="" loading="lazy">` : emoji}
-      ${disc ? `<div class="disc-badge">-${disc}%</div>` : ''}
-    </div>
-    <div class="lcard-body">
-      <div class="lcard-top">
-        <span class="lcard-store">${(p.store||'').toUpperCase()}</span>
-        ${p.valid_until ? `<span class="lcard-valid">Do ${fmt(p.valid_until)}</span>` : ''}
-      </div>
-      <div class="lcard-name">${p.product}</div>
-      <div class="lcard-prices">
-        <span class="lcard-sale">${p.sale_price}€</span>
-        ${p.original_price ? `<span class="lcard-orig">${p.original_price}€</span>` : ''}
-      </div>
-      <div class="lcard-actions">
-        <button class="lcard-btn" onclick="event.stopPropagation();shareProduct(decodeURIComponent('${enc}'))">
-          <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-        </button>
-        <button class="lcard-btn delete" onclick="event.stopPropagation();toggleFav('${p.id}',null);renderSaved()">
-          <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-        </button>
-      </div>
-    </div>
-  </div>`;
-}
-
-// ── SHARE ──
-function shareProduct(p) {
-  if (typeof p === 'string') p = JSON.parse(p);
-  const disc = p.discount_percent ? p.discount_percent.replace(/[^0-9]/g,'') : '';
-  const text = `🛒 ${p.product}\n💰 ${p.sale_price}€${p.original_price ? ` (bilo ${p.original_price}€)` : ''}${disc ? ` — ${disc}% popust!` : ''}\n🏪 ${(p.store||'').toUpperCase()}\n\nNađeno na katalog.ai`;
-  if (navigator.share) { navigator.share({title: p.product, text}).catch(()=>{}); }
-  else { navigator.clipboard.writeText(text).then(() => showToast('📋 Kopirano!')).catch(() => showToast('Dijeljenje nije dostupno')); }
-}
-
-// ── VIEWS ──
-function showView(view) {
-  // Toggle nav buttons
-  ['deals','list','chat'].forEach(v => {
-    document.getElementById(`nav-${v}`).classList.toggle('active', v === view);
-  });
-  // deals-view and list-view live inside #main
-  document.getElementById('deals-view').classList.toggle('active', view === 'deals');
-  document.getElementById('list-view').classList.toggle('active',  view === 'list');
-  // chat-view is a sibling of #main — hide/show main accordingly
-  const isChat = view === 'chat';
-  document.getElementById('main').classList.toggle('hidden', isChat);
-  document.getElementById('chat-view').classList.toggle('active', isChat);
-  // hide header bar and filters in chat
-  document.getElementById('stores-section').style.display  = view === 'deals' ? '' : 'none';
-  document.getElementById('day-tabs-wrap').style.display   = view === 'deals' ? '' : 'none';
-  document.getElementById('main-header').style.display     = isChat ? 'none' : '';
-  if (view === 'list') renderSaved();
-  if (isChat) setTimeout(() => document.getElementById('chat-input').focus(), 150);
-}
-
-// ── CHAT ──
-function setupChat() {
-  const input = document.getElementById('chat-input');
-  const btn   = document.getElementById('chat-send');
-  const send  = () => { const m = input.value.trim(); if (!m) return; input.value=''; sendChat(m); };
-  btn.onclick = send;
-  input.addEventListener('keydown', e => { if (e.key==='Enter') send(); });
-}
-
-function sendSug(text) { showView('chat'); sendChat(text); }
-
-async function sendChat(message) {
-  const msgs = document.getElementById('chat-messages');
-  const btn  = document.getElementById('chat-send');
-  msgs.querySelector('.chat-welcome')?.remove();
-
-  const time = new Date().toLocaleTimeString('hr',{hour:'2-digit',minute:'2-digit'});
-  msgs.innerHTML += `<div class="msg user"><div class="msg-bubble">${esc(message)}</div></div>`;
-
-  const tid = 't'+Date.now();
-  msgs.innerHTML += `<div class="msg bot" id="${tid}"><div class="bot-avatar">🤖</div><div class="typing-ind"><div class="tdot"></div><div class="tdot"></div><div class="tdot"></div></div></div>`;
-  msgs.scrollTop = msgs.scrollHeight;
-  btn.disabled = true;
-
-  try {
-    const r    = await fetch(`${API}/api/chat`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message})});
-    const data = await r.json();
-    document.getElementById(tid)?.remove();
-
-    let prods = '';
-    if (data.products?.length) {
-      prods = '<div class="chat-products-row">' + data.products.map(p => {
-        const enc = encodeURIComponent(JSON.stringify(p));
-        const disc = p.discount_percent ? p.discount_percent.replace(/[^0-9]/g,'') : '';
-        const emoji = EMOJIS[p.category] || '🛍️';
-        return `<div class="chat-pchip" onclick="openDetail(decodeURIComponent('${enc}'))">
-          <div class="chat-pchip-img ${p.page_image_url ? '' : 'no-img'}">
-            ${p.page_image_url ? `<img src="${p.page_image_url}" alt="" loading="lazy">` : emoji}
-            ${disc ? `<div class="chat-pchip-disc">-${disc}%</div>` : ''}
-          </div>
-          <div class="chat-pchip-body">
-            <div class="chat-pchip-name">${esc(p.product)}</div>
-            <div class="chat-pchip-prices"><span class="chat-pchip-sale">${p.sale_price}€</span>${p.original_price?`<span class="chat-pchip-orig">${p.original_price}€</span>`:''}</div>
-          </div>
-        </div>`;
-      }).join('') + '</div>';
-    }
-
-    msgs.innerHTML += `<div class="msg bot"><div class="bot-avatar">🤖</div><div class="msg-inner"><div class="msg-bubble">${esc(data.reply)}${prods ? '</div><div class="msg-bubble" style="padding:6px 0;background:none;border:none;box-shadow:none">'+prods : ''}</div><div class="msg-time">${time}</div></div></div>`;
-  } catch(e) {
-    document.getElementById(tid)?.remove();
-    msgs.innerHTML += `<div class="msg bot"><div class="bot-avatar">🤖</div><div class="msg-inner"><div class="msg-bubble">Došlo je do greške. Pokušajte ponovo.</div></div></div>`;
-  }
-  btn.disabled = false;
-  msgs.scrollTop = msgs.scrollHeight;
-}
-
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
-}
-
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2200);
-}
-</script>
+            } catch(e) {
+                if (++failCount >= MAX_FAILS)
+                    stopPolling(`❌ Polling stopped: ${e.message}`);
+            }
+        }
+    </script>
 </body>
-</html>
+</html>'''
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    file        = request.files.get("file")
+    store       = request.form.get("store")
+    valid_from  = request.form.get("valid_from", date.today().isoformat())
+    valid_until = request.form.get("valid_until")
+
+    if not file or not store:
+        return jsonify({"error": "file and store required"}), 400
+
+    if not valid_until:
+        d = datetime.strptime(valid_from, "%Y-%m-%d")
+        valid_until = (d + timedelta(days=14)).strftime("%Y-%m-%d")
+
+    # Save PDF — slow for large files. Everything else runs in background
+    # so we respond before Render's 30s proxy timeout.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        file.save(tmp.name)
+        pdf_path       = tmp.name
+        catalogue_name = file.filename.replace(".pdf", "")
+
+    job_id = str(uuid.uuid4())[:8]
+
+    def run():
+        try:
+            doc         = fitz.open(pdf_path)
+            total_pages = len(doc)
+            doc.close()
+        except Exception as e:
+            logger.error(f"Failed to open PDF: {e}")
+            try: os.remove(pdf_path)
+            except Exception: pass
+            return
+
+        if not create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
+            try: os.remove(pdf_path)
+            except Exception: pass
+            return
+
+        process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_name)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    # Respond immediately — frontend polls /status which has total_pages once job is created
+    return jsonify({"job_id": job_id, "pages": 0})
+
+
+@app.route("/status/<job_id>")
+def status(job_id):
+    job = get_job(job_id)
+    if job:
+        return jsonify(job)
+    return jsonify({"error": "not found"}), 404
+
+
+@app.route("/debug/health")
+def health():
+    return jsonify({
+        "status":   "ok",
+        "time":     datetime.now().isoformat(),
+        "supabase": bool(Config.SUPABASE_KEY),
+        "gemini":   bool(Config.GEMINI_API_KEY),
+    })
+
+
+@app.route("/debug/supabase")
+def debug_supabase():
+    """Hit this in your browser to test Supabase connectivity."""
+    results = {}
+
+    # Check env vars are set
+    results["SUPABASE_URL_set"]  = bool(Config.SUPABASE_URL)
+    results["SUPABASE_KEY_set"]  = bool(Config.SUPABASE_KEY)
+    results["SUPABASE_URL"]      = Config.SUPABASE_URL or "NOT SET"
+
+    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
+        return jsonify(results), 500
+
+    # Try a simple GET
+    try:
+        r = requests.get(
+            f"{Config.SUPABASE_URL}/rest/v1/jobs?limit=1",
+            headers={
+                "apikey":        Config.SUPABASE_KEY,
+                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            },
+            timeout=10,
+            verify=False,
+        )
+        results["status_code"] = r.status_code
+        results["response"]    = r.text[:300]
+        results["success"]     = r.status_code < 300
+    except Exception as e:
+        results["error"]   = str(e)
+        results["success"] = False
+
+    return jsonify(results)
+
+
+@app.route("/p/<product_id>")
+def product_page(product_id):
+    try:
+        data = _sb_get(f"/rest/v1/products?id=eq.{product_id}")
+        if data:
+            return jsonify(data[0])
+    except Exception as e:
+        logger.error(f"product_page failed: {e}")
+    return jsonify({"error": "Product not found"}), 404
+
+
+# ----------------------------------------------------------------------------
+# MAIN
+# On Render, use gunicorn — this block is never reached in production:
+#   gunicorn katalog:app --bind 0.0.0.0:$PORT --workers 1 --threads 4
+# ----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    port   = int(os.environ.get("PORT", 5000))
+    is_dev = os.environ.get("FLASK_ENV") == "development"
+    logger.info(f"Starting katalog.ai on port {port} (dev={is_dev})")
+    app.run(host="0.0.0.0", port=port, debug=is_dev, use_reloader=False)
