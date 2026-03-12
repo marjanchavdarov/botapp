@@ -31,6 +31,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("katalog")
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+# Ensure static folder exists so Flask doesn't crash
+os.makedirs("static", exist_ok=True)
 CORS(app)  # Allow all origins — required for frontend/Supabase to call this API
 
 
@@ -420,7 +423,13 @@ def process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_
 
 @app.route("/")
 def home():
-    return send_from_directory(app.static_folder, "index.html")
+    # Try lowercase, then capital I (case-sensitive Linux filesystem)
+    for name in ["index.html", "Index.html"]:
+        try:
+            return send_from_directory(app.static_folder, name)
+        except Exception:
+            continue
+    return jsonify({"status": "ok", "service": "katalog.ai"})
 
 
 @app.route("/api/country")
