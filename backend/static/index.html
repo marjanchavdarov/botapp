@@ -54,10 +54,20 @@
     .store-pill:active{transform:scale(.95)}
 
     /* ── DAY TABS ── */
-    .day-tabs-wrap{background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0}
+    .day-tabs-wrap{background:var(--card);flex-shrink:0}
     .day-tabs{display:flex;overflow-x:auto;scrollbar-width:none;padding:0 16px}
     .day-tabs::-webkit-scrollbar{display:none}
-    .day-tab{flex-shrink:0;padding:10px 12px;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;border-bottom:2.5px solid transparent;transition:all .15s;white-space:nowrap}
+    .day-tabs{display:flex;overflow-x:auto;scrollbar-width:none;padding:10px 16px;gap:8px}
+    .day-tabs::-webkit-scrollbar{display:none}
+    .day-tab{flex-shrink:0;padding:8px 14px;border-radius:12px;background:var(--bg);border:1.5px solid var(--border);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;transition:all .2s;min-width:52px}
+    .day-tab.today{border-color:var(--accent)}
+    .day-tab.today .dt-label{color:var(--accent)}
+    .day-tab.today .dt-date{color:var(--accent)}
+    .day-tab.active{background:var(--accent);border-color:var(--accent)}
+    .day-tab.active .dt-label{color:#fff !important}
+    .day-tab.active .dt-date{color:rgba(255,255,255,.8) !important}
+    .dt-label{font-size:13px;font-weight:700;color:var(--ink2)}
+    .dt-date{font-size:10px;font-weight:500;color:var(--muted)}
     .day-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700}
 
     /* ── MAIN ── */
@@ -194,7 +204,7 @@
     .detail-header{background:transparent;padding:12px 16px;display:flex;align-items:center;gap:12px;position:absolute;top:0;left:0;right:0;z-index:10}
     .detail-back{width:36px;height:36px;background:rgba(255,255,255,.9);border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
     .detail-back svg{width:18px;height:18px;stroke:var(--ink);fill:none;stroke-width:2.5;stroke-linecap:round}
-    .detail-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overflow-x:hidden}
+    .detail-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overflow-x:hidden;max-width:430px;margin:0 auto;width:100%}
     /* Fixed height image — never taller than 40% of screen */
     .detail-img-wrap{width:100%;height:min(260px,40vh);background:var(--card);display:flex;align-items:center;justify-content:center;font-size:72px;position:relative;overflow:hidden;flex-shrink:0}
     .detail-img-wrap img{width:100%;height:100%;object-fit:cover}
@@ -364,7 +374,7 @@
 </div>
 
 <!-- ── PRODUCT DETAIL (full screen) ── -->
-<div id="detail-view" style="position:fixed;inset:0;z-index:80;display:none;flex-direction:column;background:var(--bg);max-width:430px;left:50%;transform:translateX(-50%);overflow:hidden">
+<div id="detail-view" style="position:fixed;inset:0;z-index:80;display:none;flex-direction:column;background:var(--bg)">
   <div class="detail-scroll" id="detail-scroll">
     <div class="detail-img-wrap" id="detail-img">🛍️
       <button class="detail-back-abs" onclick="closeDetail()">
@@ -415,6 +425,8 @@ let detailProduct = null;
 // ── INIT ──
 document.addEventListener('DOMContentLoaded', () => {
   buildDayTabs();
+  const days = ['','Pon','Uto','Sri','Čet','Pet','Sub'];
+  currentDay = days[new Date().getDay()] || '';
   loadStores();
   loadProducts();
   setupChat();
@@ -424,13 +436,33 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── DAY TABS ──
 function buildDayTabs() {
   const c = document.getElementById('day-tabs');
-  const labels = ['Sve','Pon','Uto','Sri','Čet','Pet','Sub'];
-  const todayIdx = [0,2,3,4,5,6,1][new Date().getDay()]; // 0=Sun mapped
+  const labels = ['Pon','Uto','Sri','Čet','Pet','Sub'];
+  const todayIdx = new Date().getDay();
+
+  // Build a date for each tab: tab index 1=Mon...6=Sat
+  // Find this week's Monday first
+  const today = new Date();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7)); // roll back to Mon
+
   labels.forEach((l, i) => {
     const tab = document.createElement('div');
-    tab.className = 'day-tab' + (i === 0 ? ' active' : '');
-    tab.textContent = l + (i > 0 && i === todayIdx ? ' ●' : '');
-    tab.onclick = () => { document.querySelectorAll('.day-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); currentDay = i === 0 ? '' : l.replace(' ●',''); loadProducts(); };
+    const dayIdx = i + 1; // 1=Mon, 2=Tue ... 6=Sat
+    const isToday = dayIdx === todayIdx;
+    tab.className = 'day-tab' + (isToday ? ' active today' : '');
+    if (isToday) setTimeout(() => tab.scrollIntoView({behavior:'smooth', block:'nearest', inline:'center'}), 150);
+
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    const dateStr = `${d.getDate()}.${d.getMonth()+1}.`;
+    tab.innerHTML = `<span class="dt-label">${l}</span><span class="dt-date">${dateStr}</span>`;
+
+    tab.onclick = () => {
+      document.querySelectorAll('.day-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      currentDay = l;
+      loadProducts();
+    };
     c.appendChild(tab);
   });
 }
@@ -478,12 +510,14 @@ async function loadProducts() {
       const dayMap = {Pon:1,Uto:2,Sri:3,Čet:4,Pet:5,Sub:6,Ned:0};
       const td = dayMap[currentDay];
       if (td !== undefined) {
-        filtered = allProducts.filter(p => {
+        const dayFiltered = allProducts.filter(p => {
           if (!p.valid_from || !p.valid_until) return true;
           const from = new Date(p.valid_from), to = new Date(p.valid_until), d = new Date(from);
           while (d <= to) { if (d.getDay() === td) return true; d.setDate(d.getDate()+1); }
           return false;
         });
+        // fallback to all if day filter returns nothing
+        filtered = dayFiltered.length ? dayFiltered : allProducts;
       }
     }
 
