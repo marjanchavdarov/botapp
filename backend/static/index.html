@@ -61,11 +61,13 @@
     .day-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700}
 
     /* ── MAIN ── */
-    #main{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
-    .view{display:none;padding:12px 12px 90px}
+    #main{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+    #main.hidden{display:none}
+    .view{display:none;padding:12px 12px 90px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;flex:1}
     .view.active{display:block}
-    #chat-view{display:none;flex-direction:column;height:100%;padding:0}
-    #chat-view.active{display:flex}
+    /* chat-view is sibling of main — gets flex:1 when active */
+    #chat-view{display:none;flex-direction:column;overflow:hidden;min-height:0}
+    #chat-view.active{display:flex;flex:1;min-height:0}
 
     /* ── SECTION HEADER ── */
     .section-hdr{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;padding:0 4px}
@@ -173,7 +175,7 @@
     .tdot:nth-child(3){animation-delay:.4s}
     @keyframes tb{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
 
-    .chat-input-wrap{padding:10px 14px 22px;background:var(--card);border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
+    .chat-input-wrap{padding:10px 14px;padding-bottom:max(14px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
     .chat-plus{width:36px;height:36px;background:var(--bg);border:1px solid var(--border);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .chat-plus svg{width:18px;height:18px;stroke:var(--muted);fill:none;stroke-width:2.5;stroke-linecap:round}
     .chat-input{flex:1;padding:10px 16px;background:var(--bg);border:1.5px solid var(--border);border-radius:50px;font-family:'Inter',sans-serif;font-size:14px;color:var(--ink);outline:none;transition:border-color .2s}
@@ -307,8 +309,10 @@
       <div class="product-list" id="saved-list" style="padding:12px 0 0"></div>
     </div>
 
-    <!-- CHAT VIEW -->
-    <div id="chat-view" class="view">
+  </div><!-- /main -->
+
+  <!-- CHAT VIEW -->
+  <div id="chat-view">
       <div class="chat-messages" id="chat-messages">
         <div class="chat-welcome">
           <div class="cw-icon">
@@ -333,7 +337,6 @@
       </div>
     </div>
 
-  </div><!-- /main -->
 
   <!-- ── BOTTOM NAV ── -->
   <nav class="bottom-nav">
@@ -692,16 +695,23 @@ function shareProduct(p) {
 
 // ── VIEWS ──
 function showView(view) {
+  // Toggle nav buttons
   ['deals','list','chat'].forEach(v => {
-    document.getElementById(`${v}-view`).classList.toggle('active', v === view);
     document.getElementById(`nav-${v}`).classList.toggle('active', v === view);
   });
-  const isDeals = view === 'deals';
-  document.getElementById('stores-section').style.display  = isDeals ? '' : 'none';
-  document.getElementById('day-tabs-wrap').style.display   = isDeals ? '' : 'none';
-  document.getElementById('main-header').style.display     = view === 'chat' ? 'none' : '';
+  // deals-view and list-view live inside #main
+  document.getElementById('deals-view').classList.toggle('active', view === 'deals');
+  document.getElementById('list-view').classList.toggle('active',  view === 'list');
+  // chat-view is a sibling of #main — hide/show main accordingly
+  const isChat = view === 'chat';
+  document.getElementById('main').classList.toggle('hidden', isChat);
+  document.getElementById('chat-view').classList.toggle('active', isChat);
+  // hide header bar and filters in chat
+  document.getElementById('stores-section').style.display  = view === 'deals' ? '' : 'none';
+  document.getElementById('day-tabs-wrap').style.display   = view === 'deals' ? '' : 'none';
+  document.getElementById('main-header').style.display     = isChat ? 'none' : '';
   if (view === 'list') renderSaved();
-  if (view === 'chat') setTimeout(() => document.getElementById('chat-input').focus(), 100);
+  if (isChat) setTimeout(() => document.getElementById('chat-input').focus(), 150);
 }
 
 // ── CHAT ──
