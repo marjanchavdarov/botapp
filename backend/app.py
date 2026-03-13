@@ -150,7 +150,7 @@ def save_products(products, store, page_num, page_url, catalogue_name, valid_fro
             "original_price":   p.get("original_price"),
             "sale_price":       p.get("sale_price"),
             "discount_percent": p.get("discount_percent"),
-            "category":         p.get("category", "Other"),
+            "category":         p.get("category", "Ostalo"),
             "valid_from":       valid_from,
             "valid_until":      valid_until,
             "page_image_url":   page_url,
@@ -255,27 +255,26 @@ def extract_products(img_b64, store, page):
         return []
 
     prompt = f"""
-Extract ALL products from this catalog page.
+Izvuci SVE proizvode s ove stranice kataloga.
 
-Store: {store}
-Page: {page}
+Trgovina: {store}
+Stranica: {page}
 
-Return a JSON array only — no markdown, no explanation. Each item must have:
-- product: name (translate to English)
-- brand: brand name or null
-- sale_price: current price in euros
-- original_price: original price or null
-- quantity: size/weight or null
-- discount_percent: discount % or null
-- category: one of [Meat and Fish, Dairy, Bread and Bakery,
-  Fruit and Vegetables, Drinks, Snacks and Sweets, Other]
+Vrati SAMO JSON niz — bez markdowna, bez objašnjenja. Svaki proizvod mora imati:
+- product: naziv na HRVATSKOM jeziku (npr. "Mlijeko 1L", "Piletina prsa", "Pivo svjetlo")
+- brand: naziv brenda ili null
+- sale_price: akcijska cijena u eurima (samo broj, npr. "1.99")
+- original_price: redovna cijena ili null
+- quantity: količina/veličina ili null (npr. "1L", "500g")
+- discount_percent: posto popusta ili null (npr. "20%")
+- category: jedna od [Meso i riba, Mliječni, Kruh i pekarski, Voće i povrće, Pića, Grickalice i slatkiši, Kućanstvo, Osobna njega, Ostalo]
 
-Example:
-[{{"product":"Milk 1L","brand":"Z'bregov","sale_price":"0.99",
+Primjer:
+[{{"product":"Mlijeko 1L","brand":"Vindija","sale_price":"0.99",
    "original_price":"1.29","quantity":"1L","discount_percent":"23%",
-   "category":"Dairy"}}]
+   "category":"Mliječni"}}]
 
-If no products are visible, return [].
+Ako nema vidljivih proizvoda, vrati [].
 """
 
     body = {
@@ -430,6 +429,43 @@ def home():
         except Exception:
             continue
     return jsonify({"status": "ok", "service": "katalog.ai"})
+
+
+@app.route("/api/katalozi")
+def api_katalozi():
+    """Return distinct catalogue pages grouped by store."""
+    try:
+        store = request.args.get("store")
+        params = {
+            "select": "store,catalogue_name,page_number,page_image_url,valid_from,valid_until",
+            "page_image_url": "not.is.null",
+            "order": "store,catalogue_name,page_number",
+            "limit": 500,
+        }
+        if store:
+            params["store"] = f"eq.{store}"
+
+        rows = _sb_get("/rest/v1/products", params) or []
+
+        # Deduplicate by (store, catalogue_name, page_number)
+        seen = set()
+        pages = []
+        for r in rows:
+            key = (r.get("store"), r.get("catalogue_name"), r.get("page_number"))
+            if key not in seen and r.get("page_image_url"):
+                seen.add(key)
+                pages.append({
+                    "store":          r.get("store"),
+                    "catalogue_name": r.get("catalogue_name"),
+                    "page_number":    r.get("page_number"),
+                    "page_image_url": r.get("page_image_url"),
+                    "valid_from":     r.get("valid_from"),
+                    "valid_until":    r.get("valid_until"),
+                })
+        return jsonify(pages)
+    except Exception as e:
+        logger.error(f"api_katalozi failed: {e}")
+        return jsonify([])
 
 
 @app.route("/api/country")
