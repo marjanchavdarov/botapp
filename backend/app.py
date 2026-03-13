@@ -431,6 +431,33 @@ def home():
     return jsonify({"status": "ok", "service": "katalog.ai"})
 
 
+@app.route("/manifest.json")
+def manifest():
+    return send_from_directory(app.static_folder, "manifest.json")
+
+
+@app.route("/api/track", methods=["POST"])
+def api_track():
+    """Privacy-friendly analytics — no personal data, just counts."""
+    try:
+        data   = request.json or {}
+        uid    = data.get("uid", "unknown")[:32]
+        event  = data.get("event", "session")
+        ua     = data.get("ua", "")[:100]
+        today  = date.today().isoformat()
+
+        _sb_post("/rest/v1/analytics", {
+            "uid":        uid,
+            "event":      event,
+            "date":       today,
+            "user_agent": ua,
+            "created_at": datetime.now().isoformat(),
+        })
+    except Exception as e:
+        logger.error(f"api_track failed: {e}")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/katalozi")
 def api_katalozi():
     """Return distinct catalogue pages grouped by store."""
