@@ -38,9 +38,15 @@ CORS(app)  # Allow all origins — required for frontend/Supabase to call this A
 
 
 class Config:
-    GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
-    SUPABASE_URL    = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY    = os.environ.get("SUPABASE_KEY")
+    GEMINI_API_KEY       = os.environ.get("GEMINI_API_KEY")
+    SUPABASE_URL         = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY         = os.environ.get("SUPABASE_KEY")          # anon key
+    SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # service_role key (for storage)
+    # Use service key for storage if available, otherwise fall back to anon key
+    STORAGE_KEY          = property(lambda self: None)  # resolved below
+
+# Resolve which key to use for storage uploads
+_storage_key = Config.SUPABASE_SERVICE_KEY or Config.SUPABASE_KEY
     STORAGE_BUCKET  = "pages"
     BASE_URL        = os.environ.get("BASE_URL", "https://botapp-u7qa.onrender.com")
 
@@ -95,17 +101,22 @@ def _sb_patch(path, data):
     return r
 
 def _sb_storage_put(path, img_bytes):
+    url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}"
+    key = Config.SUPABASE_SERVICE_KEY or Config.SUPABASE_KEY
+    logger.info(f"Uploading to: {url} ({len(img_bytes)} bytes) using {'service' if Config.SUPABASE_SERVICE_KEY else 'anon'} key")
     r = requests.put(
-        f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}",
+        url,
         headers={
-            "apikey":        Config.SUPABASE_KEY,
-            "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+            "apikey":        key,
+            "Authorization": f"Bearer {key}",
             "Content-Type":  "image/jpeg",
             "x-upsert":      "true",
         },
         data=img_bytes, timeout=30, verify=False
     )
-    r.raise_for_status()
+    logger.info(f"Storage response: {r.status_code} — {r.text[:500]}")
+    if not r.ok:
+        raise Exception(f"Storage {r.status_code}: {r.text[:300]}")
     return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
 
 
@@ -823,6 +834,58 @@ def debug_supabase():
     except Exception as e:
         results["error"]   = str(e)
         results["success"] = False
+
+    return jsonify(results)
+
+
+@app.route("/debug/storage")
+def debug_storage():
+    """Test storage bucket — uploads a tiny test image and checks the result."""
+    results = {}
+    try:
+        # 1. List bucket contents
+        list_url = f"{Config.SUPABASE_URL}/storage/v1/object/list/{Config.STORAGE_BUCKET}"
+        r = requests.post(list_url,
+            headers={
+                "apikey": Config.SUPABASE_KEY,
+                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"limit": 5, "offset": 0, "prefix": ""},
+            timeout=10, verify=False
+        )
+        results["list_status"] = r.status_code
+        results["list_response"] = r.text[:300]
+
+        # 2. Try uploading a 1x1 white JPEG
+        tiny_jpg = (
+            b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+            b'\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t'
+            b'\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a'
+            b'\x1f\x1e\x1d\x1a\x1c\x1c $.\' ",#\x1c\x1c(7),01444\x1f\'9=82<.342\x1e\x1f'
+            b'-;\x1f\x1c\x1f+\x1f(=\x18\x16\x1f!\x1f#\x1f'
+            b'\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00'
+            b'\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b'
+            b'\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A'
+            b'\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfb\xff\xd9'
+        )
+        put_url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/debug_test.jpg"
+        r2 = requests.put(put_url,
+            headers={
+                "apikey": Config.SUPABASE_KEY,
+                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+                "Content-Type": "image/jpeg",
+                "x-upsert": "true",
+            },
+            data=tiny_jpg, timeout=10, verify=False
+        )
+        results["upload_status"]   = r2.status_code
+        results["upload_response"] = r2.text[:300]
+        results["bucket"]          = Config.STORAGE_BUCKET
+        results["supabase_url"]    = Config.SUPABASE_URL
+
+    except Exception as e:
+        results["error"] = str(e)
 
     return jsonify(results)
 
