@@ -40,15 +40,10 @@ CORS(app)  # Allow all origins — required for frontend/Supabase to call this A
 class Config:
     GEMINI_API_KEY       = os.environ.get("GEMINI_API_KEY")
     SUPABASE_URL         = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY         = os.environ.get("SUPABASE_KEY")          # anon key
-    SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # service_role key (for storage)
-    # Use service key for storage if available, otherwise fall back to anon key
-    STORAGE_KEY          = property(lambda self: None)  # resolved below
-
-# Resolve which key to use for storage uploads
-_storage_key = Config.SUPABASE_SERVICE_KEY or Config.SUPABASE_KEY
-    STORAGE_BUCKET  = "pages"
-    BASE_URL        = os.environ.get("BASE_URL", "https://botapp-u7qa.onrender.com")
+    SUPABASE_KEY         = os.environ.get("SUPABASE_KEY")
+    SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+    STORAGE_BUCKET       = "katalog-images"
+    BASE_URL             = os.environ.get("BASE_URL", "https://botapp-u7qa.onrender.com")
 
 
 CROATIA_STORES = [
