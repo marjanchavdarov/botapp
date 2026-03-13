@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#1A1008">
+  <meta name="theme-color" content="#1A1A1A">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="katalog.ai">
+  <link rel="manifest" href="/manifest.json">
   <title>katalog.ai</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -483,6 +484,8 @@ let currentDay   = '';
 let allProducts  = [];
 let savedItems   = JSON.parse(localStorage.getItem('katalog_saved') || '[]');
 let detailProduct = null;
+let loyaltyCards  = JSON.parse(localStorage.getItem('katalog_cards') || '[]');
+let selectedCardStore = '';
 
 // ── INIT ──
 document.addEventListener('DOMContentLoaded', () => {
@@ -493,6 +496,9 @@ document.addEventListener('DOMContentLoaded', () => {
   loadProducts();
   setupChat();
   updateBadge();
+  renderCards();
+  history.replaceState({view:'deals'}, '');
+  trackUser();
 });
 
 // ── DAY TABS ──
@@ -829,6 +835,7 @@ function showView(view) {
   if (isKartice)          { renderCards(); }
   if (isKatalozi)         loadKataloziStores();
   if (isChat) setTimeout(() => document.getElementById('chat-input').focus(), 150);
+  pushNav({view});
 }
 
 // ── CHAT ──
@@ -1000,29 +1007,33 @@ function katOpenCatalogue(catName) {
 
 function renderKatPages(pages) {
   const list = document.getElementById('kat-page-list');
-  const width = Math.round(100 * katZoomLevel);
-  // zoom > 1 = wider (scrollable), zoom < 1 = smaller (2 cols)
-  if (katZoomLevel < 0.9) {
-    // 2-column grid
+  list.style.display = 'flex';
+  list.style.flexDirection = 'column';
+  list.style.gap = '0';
+  list.style.gridTemplateColumns = '';
+  list.style.padding = '0';
+
+  // zoom: 0.5=2col thumbnail, 1=full width single, 1.5/2=zoomed single
+  if (katZoomLevel <= 0.5) {
     list.style.display = 'grid';
     list.style.gridTemplateColumns = '1fr 1fr';
-    list.style.gap = '8px';
+    list.style.gap = '6px';
+    list.style.padding = '10px';
     list.innerHTML = pages.map(p => `
-      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:pointer;border-radius:8px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow)">
+      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:pointer;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
         <img src="${p.page_image_url}" loading="lazy" style="width:100%;display:block">
-        <div style="padding:4px 6px;font-size:10px;color:var(--muted);text-align:center">Str. ${p.page_number}</div>
+        <div style="padding:3px 6px;font-size:10px;color:var(--muted);text-align:center;background:#fff">Str. ${p.page_number}</div>
       </div>`).join('');
   } else {
-    // single column, possibly wider than screen (scrollable)
+    // Full width single column — like scrolling through a real catalogue
     list.style.display = 'flex';
     list.style.flexDirection = 'column';
-    list.style.gap = '10px';
-    list.style.gridTemplateColumns = '';
+    list.style.gap = '2px';
     const imgWidth = katZoomLevel > 1 ? Math.round(katZoomLevel * 100) : 100;
     list.innerHTML = pages.map(p => `
-      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:pointer;border-radius:10px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow)">
+      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:zoom-in;position:relative;overflow:hidden">
         <img src="${p.page_image_url}" loading="lazy" style="width:${imgWidth}%;display:block;max-width:none">
-        <div style="padding:5px 10px;font-size:11px;color:var(--muted);background:var(--card)">Stranica ${p.page_number}</div>
+        <div style="position:absolute;bottom:0;right:0;background:rgba(0,0,0,.45);color:#fff;font-size:10px;padding:2px 7px;border-radius:6px 0 0 0">Str. ${p.page_number}</div>
       </div>`).join('');
   }
 }
@@ -1061,9 +1072,117 @@ function katCloseFullscreen() {
   document.getElementById('kat-fullscreen').style.display = 'none';
 }
 
-// ── KARTICE VJERNOSTI ──
-let loyaltyCards = JSON.parse(localStorage.getItem('katalog_cards') || '[]');
-let selectedCardStore = '';
+// ── INSTALL BANNER ──
+document.addEventListener('DOMContentLoaded', function() {
+  // Already running as installed PWA? Never show banner.
+  const isInstalled = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+  if (isInstalled) return;
+
+  // User previously installed?
+  if (localStorage.getItem('katalog_installed') === '1') return;
+
+  const banner  = document.getElementById('install-banner');
+  const btn     = document.getElementById('install-btn');
+  const skipBtn = document.getElementById('install-skip');
+  const iosDiv  = document.getElementById('ios-instructions');
+
+  if (!banner) return;
+
+  let deferredPrompt = null;
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    btn.style.display = 'block';
+  });
+
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (isIos) iosDiv.style.display = 'block';
+
+  banner.style.display = 'flex';
+
+  btn.addEventListener('click', async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        localStorage.setItem('katalog_installed', '1');
+        banner.style.display = 'none';
+      }
+      deferredPrompt = null;
+    }
+  });
+
+  window.addEventListener('appinstalled', () => {
+    localStorage.setItem('katalog_installed', '1');
+    banner.style.display = 'none';
+  });
+
+  skipBtn.addEventListener('click', () => {
+    banner.style.display = 'none';
+  });
+});
+
+// Push a state whenever user navigates so back button stays in-app
+function pushNav(state) {
+  history.pushState(state, '');
+}
+
+window.addEventListener('popstate', (e) => {
+  const state = e.state;
+
+  // Close fullscreens first
+  if (document.getElementById('kat-fullscreen').style.display !== 'none') {
+    katCloseFullscreen(); pushNav({view: 'kat-pages'}); return;
+  }
+  if (document.getElementById('card-fullscreen').style.display !== 'none') {
+    closeCardFullscreen(); pushNav({view: 'kartice'}); return;
+  }
+  if (document.getElementById('detail-view').style.display !== 'none') {
+    closeDetail(); pushNav({view: currentView}); return;
+  }
+  if (document.getElementById('add-card-modal').style.display !== 'none') {
+    closeAddCard(); pushNav({view: 'kartice'}); return;
+  }
+
+  // Katalozi back navigation
+  if (document.getElementById('kat-pages').style.display !== 'none') {
+    katBack('covers'); pushNav({view: 'kat-covers'}); return;
+  }
+  if (document.getElementById('kat-covers').style.display !== 'none') {
+    katBack('stores'); pushNav({view: 'katalozi'}); return;
+  }
+
+  // Tab navigation — go back to deals
+  if (currentView !== 'deals') {
+    showView('deals'); pushNav({view: 'deals'}); return;
+  }
+
+  // Already on deals — let browser handle (exit app)
+});
+
+// ── USER TRACKING (privacy-friendly, no cookies) ──
+function trackUser() {
+  const key = 'katalog_uid';
+  let uid = localStorage.getItem(key);
+  if (!uid) {
+    uid = 'u_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+    localStorage.setItem(key, uid);
+    // First visit — ping backend
+    fetch(`${API}/api/track`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({uid, event:'install', ua: navigator.userAgent.slice(0,80)})
+    }).catch(()=>{});
+  }
+  // Session ping
+  fetch(`${API}/api/track`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({uid, event:'session'})
+  }).catch(()=>{});
+}
 
 const KNOWN_STORES = [
   {id:'konzum',   name:'Konzum',   color:'#E8001C'},
@@ -1272,6 +1391,66 @@ document.addEventListener('DOMContentLoaded', () => { renderCards(); });
     <svg id="cf-barcode"></svg>
   </div>
   <div style="position:absolute;bottom:40px;font-size:12px;color:var(--muted)">Prinesite skeneru na blagajni</div>
+</div>
+
+<!-- INSTALL BANNER -->
+<div id="install-banner" style="display:none;position:fixed;inset:0;z-index:999;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(160deg,#1A1A1A 0%,#2D1810 50%,#1A1A1A 100%)">
+
+  <!-- Background decorative circles -->
+  <div style="position:absolute;width:350px;height:350px;border-radius:50%;background:radial-gradient(circle,rgba(232,87,42,.15),transparent 70%);top:-60px;right:-80px;pointer-events:none"></div>
+  <div style="position:absolute;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,rgba(232,87,42,.1),transparent 70%);bottom:-80px;left:-60px;pointer-events:none"></div>
+
+  <!-- Skip button top right -->
+  <button id="install-skip" style="position:absolute;top:20px;right:20px;background:rgba(255,255,255,.1);border:none;color:rgba(255,255,255,.6);font-size:13px;font-weight:500;padding:8px 16px;border-radius:20px;cursor:pointer;font-family:'Inter',sans-serif">
+    Preskoči
+  </button>
+
+  <!-- Content -->
+  <div style="display:flex;flex-direction:column;align-items:center;text-align:center;padding:32px 32px;max-width:360px">
+
+    <!-- Logo -->
+    <div style="width:88px;height:88px;background:var(--accent, #E8572A);border-radius:24px;display:flex;align-items:center;justify-content:center;margin-bottom:24px;box-shadow:0 12px 40px rgba(232,87,42,.5)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" width="44" height="44"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+    </div>
+
+    <!-- Name -->
+    <div style="font-size:36px;font-weight:800;color:#fff;margin-bottom:6px;letter-spacing:-1px">katalog.ai</div>
+    <div style="font-size:16px;color:rgba(255,255,255,.55);margin-bottom:36px;line-height:1.5">Sve akcije na jednom mjestu.<br>Uvijek uz tebe.</div>
+
+    <!-- Features -->
+    <div style="display:flex;flex-direction:column;gap:12px;width:100%;margin-bottom:40px">
+      <div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.07);border-radius:14px;padding:14px 16px">
+        <div style="font-size:24px">🏷️</div>
+        <div style="text-align:left"><div style="color:#fff;font-size:14px;font-weight:600">Aktualne akcije</div><div style="color:rgba(255,255,255,.5);font-size:12px">Lidl, Konzum, Spar i više</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.07);border-radius:14px;padding:14px 16px">
+        <div style="font-size:24px">📖</div>
+        <div style="text-align:left"><div style="color:#fff;font-size:14px;font-weight:600">Pregled kataloga</div><div style="color:rgba(255,255,255,.5);font-size:12px">Listaj stranice kao da držiš katalog</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.07);border-radius:14px;padding:14px 16px">
+        <div style="font-size:24px">🤖</div>
+        <div style="text-align:left"><div style="color:#fff;font-size:14px;font-weight:600">AI asistent</div><div style="color:rgba(255,255,255,.5);font-size:12px">Pitaj što je na akciji na hrvatskom</div></div>
+      </div>
+    </div>
+
+    <!-- Install button (Android/Desktop) -->
+    <button id="install-btn" style="display:none;width:100%;padding:16px;background:#E8572A;border:none;border-radius:16px;color:#fff;font-size:16px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:12px;box-shadow:0 8px 24px rgba(232,87,42,.4)">
+      📲 Dodaj na početni zaslon
+    </button>
+
+    <!-- iOS instructions (shown on iOS) -->
+    <div id="ios-instructions" style="display:none;width:100%;background:rgba(255,255,255,.07);border-radius:16px;padding:16px;margin-bottom:12px">
+      <div style="color:#fff;font-size:14px;font-weight:600;margin-bottom:10px">Kako dodati na iPhone:</div>
+      <div style="color:rgba(255,255,255,.7);font-size:13px;line-height:1.8">
+        1. Pritisni <strong style="color:#fff">Dijeli</strong> tipku
+        <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="2" stroke-linecap="round" width="14" height="14" style="vertical-align:middle"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        u pregledniku<br>
+        2. Odaberi <strong style="color:#fff">"Dodaj na početni zaslon"</strong>
+      </div>
+    </div>
+
+    <div style="color:rgba(255,255,255,.3);font-size:12px">Besplatno · Radi bez interneta</div>
+  </div>
 </div>
 
 </body>
