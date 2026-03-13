@@ -327,6 +327,59 @@
 
   </div><!-- /main -->
 
+  <!-- KARTICE VIEW -->
+  <div id="kartice-view" style="display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0;background:var(--bg)">
+    <!-- Header -->
+    <div style="background:var(--card);padding:16px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:18px;font-weight:800;color:var(--ink)">Kartice vjernosti</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">Pohranjeno samo na vašem uređaju</div>
+      </div>
+      <button onclick="openAddCard()" style="background:var(--accent);color:#fff;border:none;border-radius:20px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;display:flex;align-items:center;gap:6px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Dodaj
+      </button>
+    </div>
+    <!-- Cards list -->
+    <div id="cards-list" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px"></div>
+  </div>
+
+  <!-- KATALOZI VIEW (sibling of main) -->
+  <div id="katalozi-view" style="display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0">
+    <!-- Store grid -->
+    <div id="kat-stores" style="flex:1;overflow-y:auto;padding:16px">
+      <div style="font-size:18px;font-weight:800;color:var(--ink);margin-bottom:14px">Odaberi trgovinu</div>
+      <div id="kat-store-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px"></div>
+    </div>
+    <!-- Catalogue covers for selected store -->
+    <div id="kat-covers" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+      <div style="padding:12px 16px 8px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0">
+        <button onclick="katBack('stores')" style="width:32px;height:32px;border:none;background:var(--bg);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div>
+          <div id="kat-store-title" style="font-size:16px;font-weight:700;color:var(--ink)"></div>
+          <div id="kat-store-sub" style="font-size:12px;color:var(--muted)"></div>
+        </div>
+      </div>
+      <div id="kat-cover-list" style="flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px"></div>
+    </div>
+    <!-- Full page gallery -->
+    <div id="kat-pages" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+      <div style="padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0">
+        <button onclick="katBack('covers')" style="width:32px;height:32px;border:none;background:var(--bg);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div id="kat-pages-title" style="font-size:14px;font-weight:700;color:var(--ink)"></div>
+        <div style="display:flex;gap:6px">
+          <button onclick="katZoom(-1)" style="width:32px;height:32px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center">−</button>
+          <button onclick="katZoom(1)"  style="width:32px;height:32px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center">+</button>
+        </div>
+      </div>
+      <div id="kat-page-list" style="flex:1;overflow-y:auto;overflow-x:hidden;padding:12px;display:flex;flex-direction:column;gap:10px"></div>
+    </div>
+  </div>
+
   <!-- CHAT VIEW -->
   <div id="chat-view">
       <div class="chat-messages" id="chat-messages">
@@ -361,10 +414,18 @@
       <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       Akcije
     </button>
+    <button class="nav-btn" id="nav-katalozi" onclick="showView('katalozi')">
+      <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+      Katalozi
+    </button>
     <button class="nav-btn" id="nav-list" onclick="showView('list')">
       <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
       Moj popis
       <span class="nav-badge" id="list-badge" style="display:none">0</span>
+    </button>
+    <button class="nav-btn" id="nav-kartice" onclick="showView('kartice')">
+      <svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+      Kartice
     </button>
     <button class="nav-btn" id="nav-chat" onclick="showView('chat')">
       <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
@@ -409,6 +470,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
 <script>
 const API = 'https://botapp-u7qa.onrender.com';
 const EMOJIS = {'Meso i riba':'🥩','Mliječni':'🥛','Kruh i pekarski':'🍞','Voće i povrće':'🥦','Pića':'🥤','Grickalice i slatkiši':'🍫','Kućanstvo':'🧹','Osobna njega':'🧴','Ostalo':'🛍️',
@@ -742,22 +804,30 @@ function shareProduct(p) {
 
 // ── VIEWS ──
 function showView(view) {
-  // Toggle nav buttons
-  ['deals','list','chat'].forEach(v => {
-    document.getElementById(`nav-${v}`).classList.toggle('active', v === view);
+  ['deals','katalozi','list','kartice','chat'].forEach(v => {
+    const btn = document.getElementById(`nav-${v}`);
+    if (btn) btn.classList.toggle('active', v === view);
   });
-  // deals-view and list-view live inside #main
+  const isChat     = view === 'chat';
+  const isKatalozi = view === 'katalozi';
+  const isKartice  = view === 'kartice';
+  // #main contains deals-view and list-view
+  document.getElementById('main').classList.toggle('hidden', isChat || isKatalozi || isKartice);
   document.getElementById('deals-view').classList.toggle('active', view === 'deals');
   document.getElementById('list-view').classList.toggle('active',  view === 'list');
-  // chat-view is a sibling of #main — hide/show main accordingly
-  const isChat = view === 'chat';
-  document.getElementById('main').classList.toggle('hidden', isChat);
+  // siblings
   document.getElementById('chat-view').classList.toggle('active', isChat);
-  // hide header bar and filters in chat
-  document.getElementById('stores-section').style.display  = view === 'deals' ? '' : 'none';
-  document.getElementById('day-tabs-wrap').style.display   = view === 'deals' ? '' : 'none';
-  document.getElementById('main-header').style.display     = isChat ? 'none' : '';
-  if (view === 'list') renderSaved();
+  document.getElementById('katalozi-view').style.display = isKatalozi ? 'flex' : 'none';
+  document.getElementById('katalozi-view').style.flexDirection = 'column';
+  document.getElementById('kartice-view').style.display = isKartice ? 'flex' : 'none';
+  document.getElementById('kartice-view').style.flexDirection = 'column';
+  // header / filters only on deals
+  document.getElementById('stores-section').style.display = view === 'deals' ? '' : 'none';
+  document.getElementById('day-tabs-wrap').style.display  = view === 'deals' ? '' : 'none';
+  document.getElementById('main-header').style.display    = isChat ? 'none' : '';
+  if (view === 'list')    { renderSaved(); }
+  if (isKartice)          { renderCards(); }
+  if (isKatalozi)         loadKataloziStores();
   if (isChat) setTimeout(() => document.getElementById('chat-input').focus(), 150);
 }
 
@@ -829,6 +899,380 @@ function showToast(msg) {
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2200);
 }
+
+// ── KATALOZI ──
+let katAllPages   = [];   // all pages fetched
+let katZoomLevel  = 1;    // 1=full width, 0.5=2 col, 1.5=zoomed
+let katCurrentStore = '';
+let katCurrentCat   = '';
+
+async function loadKataloziStores() {
+  // Only load once
+  if (document.getElementById('kat-store-grid').children.length > 0) return;
+  try {
+    const r = await fetch(`${API}/api/katalozi`);
+    katAllPages = await r.json();
+    renderKatStoreGrid();
+  } catch(e) {
+    document.getElementById('kat-store-grid').innerHTML = '<div style="color:var(--muted);font-size:14px">Greška pri učitavanju.</div>';
+  }
+}
+
+function renderKatStoreGrid() {
+  // Get unique stores
+  const stores = [...new Set(katAllPages.map(p => p.store))].filter(Boolean);
+  const grid = document.getElementById('kat-store-grid');
+  grid.innerHTML = stores.map(s => {
+    const color = STORE_COLORS[s] || '#888';
+    // Count catalogues for this store
+    const cats = [...new Set(katAllPages.filter(p=>p.store===s).map(p=>p.catalogue_name))];
+    const pageCount = katAllPages.filter(p=>p.store===s).length;
+    // First page image as cover
+    const cover = katAllPages.find(p=>p.store===s && p.page_number===1)?.page_image_url || '';
+    return `<div onclick="katOpenStore('${s}')" style="background:var(--card);border-radius:14px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow);cursor:pointer;transition:transform .15s" ontouchstart="this.style.transform='scale(.97)'" ontouchend="this.style.transform=''">
+      <div style="height:110px;background:${color}18;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden">
+        ${cover ? `<img src="${cover}" style="width:100%;height:100%;object-fit:cover;position:absolute;inset:0" loading="lazy">` : ''}
+        <div style="position:absolute;inset:0;background:linear-gradient(to bottom,transparent 40%,${color}cc)"></div>
+        <div style="position:absolute;bottom:8px;left:10px;color:#fff;font-size:16px;font-weight:800;text-shadow:0 1px 4px rgba(0,0,0,.4)">${s.toUpperCase()}</div>
+      </div>
+      <div style="padding:10px 12px">
+        <div style="font-size:12px;color:var(--muted)">${cats.length} katalog${cats.length!==1?'a':''} · ${pageCount} str.</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function katOpenStore(store) {
+  katCurrentStore = store;
+  const color = STORE_COLORS[store] || '#888';
+  document.getElementById('kat-store-title').textContent = store.toUpperCase();
+
+  // Group by catalogue_name
+  const cats = {};
+  katAllPages.filter(p=>p.store===store).forEach(p => {
+    if (!cats[p.catalogue_name]) cats[p.catalogue_name] = [];
+    cats[p.catalogue_name].push(p);
+  });
+
+  const catNames = Object.keys(cats);
+  document.getElementById('kat-store-sub').textContent = `${catNames.length} katalog${catNames.length!==1?'a':''}`;
+
+  const list = document.getElementById('kat-cover-list');
+  list.innerHTML = catNames.map(cat => {
+    const pages = cats[cat].sort((a,b)=>a.page_number-b.page_number);
+    const cover = pages[0];
+    const fmt = d => d ? d.split('-').reverse().join('.') : '';
+    const isActive = cover.valid_until ? new Date(cover.valid_until) >= new Date() : true;
+    return `<div onclick="katOpenCatalogue('${cat}')" style="background:var(--card);border-radius:12px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow);cursor:pointer;transition:transform .15s" ontouchstart="this.style.transform='scale(.97)'" ontouchend="this.style.transform=''">
+      <div style="position:relative">
+        ${cover.page_image_url ? `<img src="${cover.page_image_url}" style="width:100%;aspect-ratio:3/4;object-fit:cover;display:block" loading="lazy">` : `<div style="width:100%;aspect-ratio:3/4;background:${color}18;display:flex;align-items:center;justify-content:center;font-size:32px">📖</div>`}
+        <div style="position:absolute;top:6px;right:6px;background:${isActive?'#22C55E':'#94A3B8'};color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px">${isActive?'AKTIVAN':'USKORO'}</div>
+        <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.6));padding:8px 8px 6px;color:#fff;font-size:10px">${pages.length} stranica</div>
+      </div>
+      <div style="padding:8px 10px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${cat}</div>
+        ${cover.valid_until?`<div style="font-size:11px;color:var(--muted)">Do ${fmt(cover.valid_until)}</div>`:''}
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('kat-stores').style.display  = 'none';
+  document.getElementById('kat-covers').style.display  = 'flex';
+  document.getElementById('kat-covers').style.flexDirection = 'column';
+  document.getElementById('kat-pages').style.display   = 'none';
+}
+
+function katOpenCatalogue(catName) {
+  katCurrentCat = catName;
+  const pages = katAllPages
+    .filter(p => p.store===katCurrentStore && p.catalogue_name===catName)
+    .sort((a,b) => a.page_number - b.page_number);
+
+  document.getElementById('kat-pages-title').textContent = catName;
+  katZoomLevel = 1;
+  renderKatPages(pages);
+
+  document.getElementById('kat-covers').style.display = 'none';
+  document.getElementById('kat-pages').style.display  = 'flex';
+  document.getElementById('kat-pages').style.flexDirection = 'column';
+  document.getElementById('kat-page-list').scrollTop = 0;
+}
+
+function renderKatPages(pages) {
+  const list = document.getElementById('kat-page-list');
+  const width = Math.round(100 * katZoomLevel);
+  // zoom > 1 = wider (scrollable), zoom < 1 = smaller (2 cols)
+  if (katZoomLevel < 0.9) {
+    // 2-column grid
+    list.style.display = 'grid';
+    list.style.gridTemplateColumns = '1fr 1fr';
+    list.style.gap = '8px';
+    list.innerHTML = pages.map(p => `
+      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:pointer;border-radius:8px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow)">
+        <img src="${p.page_image_url}" loading="lazy" style="width:100%;display:block">
+        <div style="padding:4px 6px;font-size:10px;color:var(--muted);text-align:center">Str. ${p.page_number}</div>
+      </div>`).join('');
+  } else {
+    // single column, possibly wider than screen (scrollable)
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '10px';
+    list.style.gridTemplateColumns = '';
+    const imgWidth = katZoomLevel > 1 ? Math.round(katZoomLevel * 100) : 100;
+    list.innerHTML = pages.map(p => `
+      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:pointer;border-radius:10px;overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow)">
+        <img src="${p.page_image_url}" loading="lazy" style="width:${imgWidth}%;display:block;max-width:none">
+        <div style="padding:5px 10px;font-size:11px;color:var(--muted);background:var(--card)">Stranica ${p.page_number}</div>
+      </div>`).join('');
+  }
+}
+
+function katZoom(dir) {
+  const levels = [0.5, 1, 1.5, 2];
+  const idx = levels.findIndex(l => Math.abs(l - katZoomLevel) < 0.1);
+  const newIdx = Math.max(0, Math.min(levels.length-1, idx + dir));
+  katZoomLevel = levels[newIdx];
+  const pages = katAllPages
+    .filter(p => p.store===katCurrentStore && p.catalogue_name===katCurrentCat)
+    .sort((a,b) => a.page_number - b.page_number);
+  renderKatPages(pages);
+}
+
+function katBack(to) {
+  if (to === 'stores') {
+    document.getElementById('kat-covers').style.display = 'none';
+    document.getElementById('kat-pages').style.display  = 'none';
+    document.getElementById('kat-stores').style.display = '';
+  } else if (to === 'covers') {
+    document.getElementById('kat-pages').style.display  = 'none';
+    document.getElementById('kat-covers').style.display = 'flex';
+    document.getElementById('kat-covers').style.flexDirection = 'column';
+  }
+}
+
+// Fullscreen page viewer
+function katFullscreen(url, pageNum) {
+  const el = document.getElementById('kat-fullscreen');
+  el.querySelector('img').src = url;
+  el.querySelector('.kf-page').textContent = `Stranica ${pageNum}`;
+  el.style.display = 'flex';
+}
+function katCloseFullscreen() {
+  document.getElementById('kat-fullscreen').style.display = 'none';
+}
+
+// ── KARTICE VJERNOSTI ──
+let loyaltyCards = JSON.parse(localStorage.getItem('katalog_cards') || '[]');
+let selectedCardStore = '';
+
+const KNOWN_STORES = [
+  {id:'konzum',   name:'Konzum',   color:'#E8001C'},
+  {id:'lidl',     name:'Lidl',     color:'#0050AA'},
+  {id:'spar',     name:'Spar',     color:'#00833E'},
+  {id:'kaufland', name:'Kaufland', color:'#E30613'},
+  {id:'dm',       name:'dm',       color:'#E31837'},
+  {id:'plodine',  name:'Plodine',  color:'#7B2082'},
+  {id:'tommy',    name:'Tommy',    color:'#FF6B00'},
+  {id:'ntl',      name:'NTL',      color:'#003087'},
+];
+
+function renderCards() {
+  const list = document.getElementById('cards-list');
+  if (!list) return;
+  if (!loyaltyCards.length) {
+    list.innerHTML = `
+      <div style="text-align:center;padding:60px 24px">
+        <div style="font-size:48px;margin-bottom:16px">💳</div>
+        <div style="font-size:18px;font-weight:700;color:var(--ink2);margin-bottom:8px">Nema kartica</div>
+        <div style="font-size:14px;color:var(--muted);line-height:1.6;margin-bottom:24px">Dodajte kartice vjernosti vaših omiljenih trgovina. Prikazuju se kao barkod na blagajni.</div>
+        <button onclick="openAddCard()" style="background:var(--accent);color:#fff;border:none;border-radius:12px;padding:12px 28px;font-size:15px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif">+ Dodaj karticu</button>
+      </div>`;
+    return;
+  }
+  list.innerHTML = loyaltyCards.map((c, i) => {
+    const color = STORE_COLORS[c.store] || '#555';
+    const masked = c.number.length > 8
+      ? c.number.slice(0,4) + ' •••• ' + c.number.slice(-4)
+      : c.number;
+    return `
+      <div onclick="openCardFullscreen(${i})" style="background:linear-gradient(135deg,${color} 0%,${color}bb 100%);border-radius:18px;padding:20px 22px;cursor:pointer;position:relative;box-shadow:0 6px 20px ${color}44;min-height:110px;display:flex;flex-direction:column;justify-content:space-between;transition:transform .15s" ontouchstart="this.style.transform='scale(.97)'" ontouchend="this.style.transform=''">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div style="font-size:20px;font-weight:800;color:#fff;letter-spacing:.5px">${c.store.toUpperCase()}</div>
+          <button onclick="event.stopPropagation();deleteCard(${i})" style="width:28px;height:28px;border:none;background:rgba(255,255,255,.2);border-radius:50%;cursor:pointer;color:#fff;font-size:16px;display:flex;align-items:center;justify-content:center;line-height:1">×</button>
+        </div>
+        <div>
+          <div style="font-size:15px;color:rgba(255,255,255,.9);letter-spacing:2px;font-family:monospace;margin-bottom:6px">${masked}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.6)">Pritisni za barkod →</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function openAddCard() {
+  selectedCardStore = '';
+  document.getElementById('card-number-input').value = '';
+  document.getElementById('barcode-preview').innerHTML = '<span style="color:var(--muted);font-size:13px">Unesite broj kartice...</span>';
+
+  // Build store pills
+  const pills = document.getElementById('card-store-pills');
+  pills.innerHTML = KNOWN_STORES.map(s =>
+    `<div onclick="selectCardStore('${s.id}')" id="cpill-${s.id}" style="padding:6px 14px;border-radius:20px;border:1.5px solid var(--border);font-size:13px;font-weight:600;cursor:pointer;color:var(--ink2);transition:all .15s">${s.name}</div>`
+  ).join('');
+
+  const modal = document.getElementById('add-card-modal');
+  modal.style.display = 'flex';
+  setTimeout(() => document.getElementById('card-number-input').focus(), 300);
+}
+
+function selectCardStore(id) {
+  selectedCardStore = id;
+  document.querySelectorAll('[id^="cpill-"]').forEach(p => {
+    const isSelected = p.id === `cpill-${id}`;
+    const color = STORE_COLORS[id] || 'var(--accent)';
+    p.style.background    = isSelected ? color : '';
+    p.style.borderColor   = isSelected ? color : 'var(--border)';
+    p.style.color         = isSelected ? '#fff' : 'var(--ink2)';
+  });
+}
+
+function previewBarcode(val) {
+  const preview = document.getElementById('barcode-preview');
+  if (!val || val.length < 4) {
+    preview.innerHTML = '<span style="color:var(--muted);font-size:13px">Unesite broj kartice...</span>';
+    return;
+  }
+  try {
+    preview.innerHTML = '<svg id="barcode-prev-svg"></svg>';
+    JsBarcode('#barcode-prev-svg', val, {
+      format: guessFormat(val),
+      width: 2, height: 60,
+      displayValue: true,
+      fontSize: 12,
+      margin: 8,
+    });
+  } catch(e) {
+    preview.innerHTML = '<span style="color:var(--muted);font-size:13px">Neispravan format broja.</span>';
+  }
+}
+
+function guessFormat(num) {
+  const clean = num.replace(/\s/g,'');
+  if (/^\d{13}$/.test(clean)) return 'EAN13';
+  if (/^\d{8}$/.test(clean))  return 'EAN8';
+  if (/^\d{12}$/.test(clean)) return 'UPC';
+  return 'CODE128';
+}
+
+function saveCard() {
+  const num = document.getElementById('card-number-input').value.trim();
+  if (!num) { showToast('Unesite broj kartice'); return; }
+  if (!selectedCardStore) { showToast('Odaberite trgovinu'); return; }
+  loyaltyCards.push({ store: selectedCardStore, number: num });
+  localStorage.setItem('katalog_cards', JSON.stringify(loyaltyCards));
+  closeAddCard();
+  renderCards();
+  showToast('✓ Kartica spremljena!');
+}
+
+function deleteCard(i) {
+  loyaltyCards.splice(i, 1);
+  localStorage.setItem('katalog_cards', JSON.stringify(loyaltyCards));
+  renderCards();
+  showToast('Kartica uklonjena');
+}
+
+function closeAddCard() {
+  document.getElementById('add-card-modal').style.display = 'none';
+}
+
+function openCardFullscreen(i) {
+  const c = loyaltyCards[i];
+  document.getElementById('cf-store').textContent  = c.store.toUpperCase();
+  document.getElementById('cf-number').textContent = c.number;
+  const fs = document.getElementById('card-fullscreen');
+  fs.style.display = 'flex';
+  // Max brightness
+  try { screen.orientation && window.screen.orientation.lock?.('portrait'); } catch(e){}
+
+  try {
+    JsBarcode('#cf-barcode', c.number, {
+      format: guessFormat(c.number),
+      width: 3, height: 100,
+      displayValue: true,
+      fontSize: 16,
+      margin: 12,
+    });
+  } catch(e) {
+    document.getElementById('cf-barcode').innerHTML = `<text y="50" style="font-size:14px;fill:#888">Neispravan format</text>`;
+  }
+}
+
+function closeCardFullscreen() {
+  document.getElementById('card-fullscreen').style.display = 'none';
+}
+
+// Render cards when list view opens
+const _origShowView = showView;
+document.addEventListener('DOMContentLoaded', () => { renderCards(); });
+
 </script>
+<!-- KATALOZI FULLSCREEN PAGE VIEWER -->
+<div id="kat-fullscreen" style="display:none;position:fixed;inset:0;z-index:200;background:#000;flex-direction:column;align-items:center;justify-content:center">
+  <div style="position:absolute;top:0;left:0;right:0;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(#000a,transparent);z-index:10">
+    <span class="kf-page" style="color:#fff;font-size:13px;font-weight:600"></span>
+    <button onclick="katCloseFullscreen()" style="background:rgba(255,255,255,.15);border:none;border-radius:50%;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <img style="max-width:100%;max-height:100%;object-fit:contain" src="" alt="">
+</div>
+
+<!-- ADD CARD MODAL -->
+<div id="add-card-modal" style="display:none;position:fixed;inset:0;z-index:150;background:rgba(0,0,0,.5);align-items:flex-end;justify-content:center">
+  <div style="background:var(--card);border-radius:24px 24px 0 0;padding:24px 20px 36px;width:100%;max-width:430px">
+    <div style="width:36px;height:4px;background:var(--border);border-radius:2px;margin:0 auto 20px"></div>
+    <div style="font-size:18px;font-weight:800;color:var(--ink);margin-bottom:18px">Dodaj karticu</div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Trgovina</div>
+      <div id="card-store-pills" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">Broj kartice</div>
+      <input id="card-number-input" type="text" inputmode="numeric" placeholder="npr. 1234567890123"
+        style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:16px;font-family:'Inter',sans-serif;color:var(--ink);background:var(--bg);outline:none"
+        oninput="previewBarcode(this.value)">
+    </div>
+
+    <!-- Live barcode preview -->
+    <div id="barcode-preview" style="background:var(--bg);border-radius:12px;padding:14px;text-align:center;margin-bottom:16px;min-height:60px;display:flex;align-items:center;justify-content:center">
+      <span style="color:var(--muted);font-size:13px">Unesite broj kartice...</span>
+    </div>
+
+    <div style="display:flex;gap:10px">
+      <button onclick="closeAddCard()" style="flex:1;padding:13px;border:1.5px solid var(--border);border-radius:12px;background:none;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;font-family:'Inter',sans-serif">Odustani</button>
+      <button onclick="saveCard()" style="flex:1;padding:13px;border:none;border-radius:12px;background:var(--accent);font-size:14px;font-weight:600;color:#fff;cursor:pointer;font-family:'Inter',sans-serif">Spremi</button>
+    </div>
+  </div>
+</div>
+
+<!-- CARD FULLSCREEN (scan at checkout) -->
+<div id="card-fullscreen" style="display:none;position:fixed;inset:0;z-index:200;background:#fff;flex-direction:column;align-items:center;justify-content:center">
+  <div style="position:absolute;top:16px;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:0 16px">
+    <div>
+      <div id="cf-store" style="font-size:18px;font-weight:800;color:var(--ink)"></div>
+      <div id="cf-number" style="font-size:13px;color:var(--muted);margin-top:2px"></div>
+    </div>
+    <button onclick="closeCardFullscreen()" style="width:36px;height:36px;border:1.5px solid var(--border);border-radius:50%;background:var(--bg);cursor:pointer;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div style="text-align:center;padding:20px">
+    <svg id="cf-barcode"></svg>
+  </div>
+  <div style="position:absolute;bottom:40px;font-size:12px;color:var(--muted)">Prinesite skeneru na blagajni</div>
+</div>
+
 </body>
 </html>
