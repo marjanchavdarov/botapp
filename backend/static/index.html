@@ -279,10 +279,22 @@
       <span class="logo-text">katalog.ai</span>
     </div>
     <div class="hicons">
-      <button class="hbtn"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M21 21l-4.35-4.35"/></svg></button>
-      <button class="hbtn"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+      <button class="hbtn" onclick="openHeaderSearch()" title="Pretraži">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M21 21l-4.35-4.35"/></svg>
+      </button>
+      <button class="hbtn" onclick="showView('list')" title="Moj popis">
+        <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
     </div>
   </header>
+  <!-- Search bar (hidden by default) -->
+  <div id="header-search-bar" style="display:none;background:var(--card);padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0">
+    <div style="display:flex;align-items:center;background:var(--bg);border:1.5px solid var(--border);border-radius:12px;padding:0 12px;gap:8px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" width="16" height="16"><circle cx="11" cy="11" r="6"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input id="header-search-input" type="search" placeholder="Pretraži proizvode..." style="flex:1;border:none;background:none;padding:10px 0;font-size:14px;font-family:'Inter',sans-serif;color:var(--ink);outline:none" oninput="onHeaderSearch(this.value)">
+      <button onclick="closeHeaderSearch()" style="border:none;background:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0;line-height:1">×</button>
+    </div>
+  </div>
 
   <!-- ── STORE FILTER ── -->
   <div class="stores-section" id="stores-section">
@@ -367,17 +379,35 @@
     </div>
     <!-- Full page gallery -->
     <div id="kat-pages" style="display:none;flex:1;flex-direction:column;overflow:hidden">
-      <div style="padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0">
-        <button onclick="katBack('covers')" style="width:32px;height:32px;border:none;background:var(--bg);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center">
+      <!-- Header with back, title, page counter, zoom -->
+      <div style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0;gap:8px">
+        <button onclick="katBack('covers')" style="width:32px;height:32px;border:none;background:var(--bg);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
-        <div id="kat-pages-title" style="font-size:14px;font-weight:700;color:var(--ink)"></div>
-        <div style="display:flex;gap:6px">
-          <button onclick="katZoom(-1)" style="width:32px;height:32px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center">−</button>
-          <button onclick="katZoom(1)"  style="width:32px;height:32px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center">+</button>
+        <div id="kat-pages-title" style="font-size:13px;font-weight:700;color:var(--ink);flex:1;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <button onclick="katZoom(-1)" style="width:30px;height:30px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center">−</button>
+          <button onclick="katZoom(1)"  style="width:30px;height:30px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center">+</button>
         </div>
       </div>
-      <div id="kat-page-list" style="flex:1;overflow-y:auto;overflow-x:hidden;padding:12px;display:flex;flex-direction:column;gap:10px"></div>
+      <!-- Page counter -->
+      <div id="kat-page-counter" style="background:var(--bg);padding:6px 16px;font-size:12px;font-weight:600;color:var(--muted);text-align:center;flex-shrink:0;border-bottom:1px solid var(--border)">Stranica 1 od 1</div>
+      <!-- Single page display -->
+      <div id="kat-page-list" style="flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;background:#222;position:relative">
+        <img id="kat-current-img" src="" style="width:100%;height:auto;display:block;max-width:none;object-fit:contain" loading="eager">
+      </div>
+      <!-- Prev / Next -->
+      <div style="display:flex;background:var(--card);border-top:1px solid var(--border);flex-shrink:0">
+        <button onclick="katPrevPage()" id="kat-prev-btn" style="flex:1;padding:14px;border:none;background:none;font-size:15px;font-weight:700;color:var(--ink2);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;font-family:'Inter',sans-serif">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><polyline points="15 18 9 12 15 6"/></svg>
+          Prethodna
+        </button>
+        <div style="width:1px;background:var(--border)"></div>
+        <button onclick="katNextPage()" id="kat-next-btn" style="flex:1;padding:14px;border:none;background:none;font-size:15px;font-weight:700;color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;font-family:'Inter',sans-serif">
+          Sljedeća
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
     </div>
   </div>
 
@@ -989,66 +1019,82 @@ function katOpenStore(store) {
   document.getElementById('kat-pages').style.display   = 'none';
 }
 
+let katCurrentPageIdx = 0;
+let katCurrentPages   = [];
+
 function katOpenCatalogue(catName) {
   katCurrentCat = catName;
-  const pages = katAllPages
-    .filter(p => p.store===katCurrentStore && p.catalogue_name===catName)
-    .sort((a,b) => a.page_number - b.page_number);
+  katCurrentPages = katAllPages
+    .filter(p => p.store === katCurrentStore && p.catalogue_name === catName)
+    .sort((a, b) => a.page_number - b.page_number);
 
   document.getElementById('kat-pages-title').textContent = catName;
-  katZoomLevel = 1;
-  renderKatPages(pages);
+  katCurrentPageIdx = 0;
+  katShowPage(0);
 
   document.getElementById('kat-covers').style.display = 'none';
   document.getElementById('kat-pages').style.display  = 'flex';
   document.getElementById('kat-pages').style.flexDirection = 'column';
+}
+
+function katShowPage(idx) {
+  const pages = katCurrentPages;
+  if (!pages.length) return;
+  idx = Math.max(0, Math.min(pages.length - 1, idx));
+  katCurrentPageIdx = idx;
+
+  const p = pages[idx];
+  const img = document.getElementById('kat-current-img');
+  img.src = p.page_image_url;
+
+  // Zoom
+  const zoomMap = {0.5: '50%', 1: '100%', 1.5: '150%', 2: '200%'};
+  img.style.width = zoomMap[katZoomLevel] || '100%';
+
+  document.getElementById('kat-page-counter').textContent =
+    `Stranica ${idx + 1} od ${pages.length}`;
+
+  // Dim prev/next buttons at edges
+  document.getElementById('kat-prev-btn').style.opacity = idx === 0 ? '0.3' : '1';
+  document.getElementById('kat-next-btn').style.opacity = idx === pages.length - 1 ? '0.3' : '1';
+
+  // Scroll image area back to top on page change
   document.getElementById('kat-page-list').scrollTop = 0;
 }
 
-function renderKatPages(pages) {
-  const list = document.getElementById('kat-page-list');
-  list.style.display = 'flex';
-  list.style.flexDirection = 'column';
-  list.style.gap = '0';
-  list.style.gridTemplateColumns = '';
-  list.style.padding = '0';
-
-  // zoom: 0.5=2col thumbnail, 1=full width single, 1.5/2=zoomed single
-  if (katZoomLevel <= 0.5) {
-    list.style.display = 'grid';
-    list.style.gridTemplateColumns = '1fr 1fr';
-    list.style.gap = '6px';
-    list.style.padding = '10px';
-    list.innerHTML = pages.map(p => `
-      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:pointer;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
-        <img src="${p.page_image_url}" loading="lazy" style="width:100%;display:block">
-        <div style="padding:3px 6px;font-size:10px;color:var(--muted);text-align:center;background:#fff">Str. ${p.page_number}</div>
-      </div>`).join('');
-  } else {
-    // Full width single column — like scrolling through a real catalogue
-    list.style.display = 'flex';
-    list.style.flexDirection = 'column';
-    list.style.gap = '2px';
-    const imgWidth = katZoomLevel > 1 ? Math.round(katZoomLevel * 100) : 100;
-    list.innerHTML = pages.map(p => `
-      <div onclick="katFullscreen('${p.page_image_url}',${p.page_number})" style="cursor:zoom-in;position:relative;overflow:hidden">
-        <img src="${p.page_image_url}" loading="lazy" style="width:${imgWidth}%;display:block;max-width:none">
-        <div style="position:absolute;bottom:0;right:0;background:rgba(0,0,0,.45);color:#fff;font-size:10px;padding:2px 7px;border-radius:6px 0 0 0">Str. ${p.page_number}</div>
-      </div>`).join('');
-  }
+function katPrevPage() {
+  if (katCurrentPageIdx > 0) katShowPage(katCurrentPageIdx - 1);
 }
+function katNextPage() {
+  if (katCurrentPageIdx < katCurrentPages.length - 1) katShowPage(katCurrentPageIdx + 1);
+}
+
+function renderKatPages() { katShowPage(katCurrentPageIdx); } // kept for zoom compat
 
 function katZoom(dir) {
   const levels = [0.5, 1, 1.5, 2];
   const idx = levels.findIndex(l => Math.abs(l - katZoomLevel) < 0.1);
-  const newIdx = Math.max(0, Math.min(levels.length-1, idx + dir));
-  katZoomLevel = levels[newIdx];
-  const pages = katAllPages
-    .filter(p => p.store===katCurrentStore && p.catalogue_name===katCurrentCat)
-    .sort((a,b) => a.page_number - b.page_number);
-  renderKatPages(pages);
+  katZoomLevel = levels[Math.max(0, Math.min(levels.length - 1, idx + dir))];
+  katShowPage(katCurrentPageIdx);
 }
 
+// ── SWIPE LEFT / RIGHT in katalog page viewer ──
+(function() {
+  let startX = 0, startY = 0;
+  document.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, {passive: true});
+  document.addEventListener('touchend', e => {
+    if (document.getElementById('kat-pages').style.display === 'none') return;
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
+      if (dx < 0) katNextPage();
+      else        katPrevPage();
+    }
+  }, {passive: true});
+})();
 function katBack(to) {
   if (to === 'stores') {
     document.getElementById('kat-covers').style.display = 'none';
@@ -1074,31 +1120,42 @@ function katCloseFullscreen() {
 
 // ── INSTALL BANNER ──
 document.addEventListener('DOMContentLoaded', function() {
-  // Already running as installed PWA? Never show banner.
   const isInstalled = window.matchMedia('(display-mode: standalone)').matches
     || window.navigator.standalone === true;
   if (isInstalled) return;
-
-  // User previously installed?
   if (localStorage.getItem('katalog_installed') === '1') return;
 
-  const banner  = document.getElementById('install-banner');
-  const btn     = document.getElementById('install-btn');
-  const skipBtn = document.getElementById('install-skip');
-  const iosDiv  = document.getElementById('ios-instructions');
+  const banner       = document.getElementById('install-banner');
+  const btn          = document.getElementById('install-btn');
+  const skipBtn      = document.getElementById('install-skip');
+  const iosDiv       = document.getElementById('ios-instructions');
+  const androidDiv   = document.getElementById('android-instructions');
 
   if (!banner) return;
+
+  const isIos     = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isAndroid = /android/i.test(navigator.userAgent);
 
   let deferredPrompt = null;
 
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
+    // Native prompt available — show the button, hide manual instructions
     btn.style.display = 'block';
+    androidDiv.style.display = 'none';
   });
 
-  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  if (isIos) iosDiv.style.display = 'block';
+  // Show correct instructions immediately based on platform
+  if (isIos) {
+    iosDiv.style.display = 'block';
+  } else if (isAndroid) {
+    // Show manual instructions by default; native button will replace if available
+    androidDiv.style.display = 'block';
+  } else {
+    // Desktop — show Android-style instructions
+    androidDiv.style.display = 'block';
+  }
 
   banner.style.display = 'flex';
 
@@ -1125,6 +1182,34 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Push a state whenever user navigates so back button stays in-app
+// ── HEADER SEARCH ──
+function openHeaderSearch() {
+  document.getElementById('header-search-bar').style.display = 'block';
+  setTimeout(() => document.getElementById('header-search-input').focus(), 100);
+  showView('deals');
+}
+function closeHeaderSearch() {
+  document.getElementById('header-search-bar').style.display = 'none';
+  document.getElementById('header-search-input').value = '';
+  loadProducts();
+}
+let searchDebounce;
+function onHeaderSearch(val) {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    const q = val.trim();
+    const list = document.getElementById('deals-list');
+    if (!q) { loadProducts(); return; }
+    const filtered = allProducts.filter(p =>
+      (p.product||'').toLowerCase().includes(q.toLowerCase()) ||
+      (p.brand||'').toLowerCase().includes(q.toLowerCase())
+    );
+    list.innerHTML = filtered.length
+      ? filtered.map(p => pcardHTML(p)).join('')
+      : `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">Nema rezultata za "${q}"</div></div>`;
+  }, 300);
+}
+
 function pushNav(state) {
   history.pushState(state, '');
 }
@@ -1433,18 +1518,27 @@ document.addEventListener('DOMContentLoaded', () => { renderCards(); });
       </div>
     </div>
 
-    <!-- Install button (Android/Desktop) -->
+    <!-- Native install button (Android Chrome when PWA criteria met) -->
     <button id="install-btn" style="display:none;width:100%;padding:16px;background:#E8572A;border:none;border-radius:16px;color:#fff;font-size:16px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:12px;box-shadow:0 8px 24px rgba(232,87,42,.4)">
       📲 Dodaj na početni zaslon
     </button>
 
-    <!-- iOS instructions (shown on iOS) -->
+    <!-- iOS instructions -->
     <div id="ios-instructions" style="display:none;width:100%;background:rgba(255,255,255,.07);border-radius:16px;padding:16px;margin-bottom:12px">
-      <div style="color:#fff;font-size:14px;font-weight:600;margin-bottom:10px">Kako dodati na iPhone:</div>
-      <div style="color:rgba(255,255,255,.7);font-size:13px;line-height:1.8">
-        1. Pritisni <strong style="color:#fff">Dijeli</strong> tipku
-        <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="2" stroke-linecap="round" width="14" height="14" style="vertical-align:middle"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      <div style="color:#fff;font-size:14px;font-weight:600;margin-bottom:10px">📱 Kako dodati na iPhone:</div>
+      <div style="color:rgba(255,255,255,.75);font-size:14px;line-height:2">
+        1. Pritisni tipku <strong style="color:#fff">Dijeli</strong>
+        <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.9)" stroke-width="2.5" stroke-linecap="round" width="16" height="16" style="vertical-align:middle;margin:0 2px"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
         u pregledniku<br>
+        2. Odaberi <strong style="color:#fff">"Dodaj na početni zaslon"</strong>
+      </div>
+    </div>
+
+    <!-- Android fallback instructions (shown when native prompt unavailable) -->
+    <div id="android-instructions" style="display:none;width:100%;background:rgba(255,255,255,.07);border-radius:16px;padding:16px;margin-bottom:12px">
+      <div style="color:#fff;font-size:14px;font-weight:600;margin-bottom:10px">📲 Kako dodati na Android:</div>
+      <div style="color:rgba(255,255,255,.75);font-size:14px;line-height:2">
+        1. Pritisni <strong style="color:#fff">⋮</strong> (tri točke) gore desno<br>
         2. Odaberi <strong style="color:#fff">"Dodaj na početni zaslon"</strong>
       </div>
     </div>
