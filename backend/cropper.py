@@ -84,94 +84,95 @@ _GEMINI_URL = (
 
 def detect_products_bbox(img_b64, img_width, img_height):
     """
-    Use Gemini's native bounding box detection.
-    Gemini returns boxes as [y1, x1, y2, x2] normalized 0-1000.
-    We convert to pixel coordinates.
+    Ask Gemini to return product bounding boxes as normalized 0.0-1.0 fractions.
+    This is the most reliable format across all Gemini versions.
     """
-    # Use gemini-2.0-flash for better spatial accuracy
-    detect_url = (
-        "https://generativelanguage.googleapis.com"
-        "/v1beta/models/gemini-2.0-flash:generateContent"
-    )
+    prompt = """You are a precise product detector for retail catalogues.
 
-    prompt = """Detect every individual product in this catalogue page.
-For each product include its image AND price tag in the bounding box.
-Return bounding boxes with label for each product."""
+Look at this catalogue page and find every individual product.
+Each product box must include: the product image AND its price tag.
 
+Return ONLY a JSON array. No markdown, no explanation. Example:
+[
+  {"label": "Gloria kava 500g", "x1": 0.05, "y1": 0.10, "x2": 0.48, "y2": 0.55},
+  {"label": "Doppelkeks 600g",  "x1": 0.52, "y1": 0.08, "x2": 0.95, "y2": 0.52}
+]
+
+Rules:
+- x1,y1 = top-left corner (0.0 to 1.0)
+- x2,y2 = bottom-right corner (0.0 to 1.0)
+- Include price tag in each box
+- Do NOT overlap boxes
+- Return [] if no products found
+"""
     body = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
             {"text": prompt},
         ]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 4096},
     }
 
     for attempt in range(3):
         try:
-            r = requests.post(f"{detect_url}?key={Config.GEMINI_API_KEY}",
+            r = requests.post(f"{_GEMINI_URL}?key={Config.GEMINI_API_KEY}",
                               json=body, timeout=90)
             if r.status_code != 200:
-                logger.error(f"Gemini {r.status_code}: {r.text[:200]}")
+                logger.error(f"Gemini {r.status_code}: {r.text[:300]}")
                 time.sleep(2 ** attempt)
                 continue
 
             result = r.json()
             if "candidates" not in result:
+                logger.error("Gemini: no candidates")
                 time.sleep(2 ** attempt)
                 continue
 
-            parts = result["candidates"][0]["content"]["parts"]
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
+            logger.info(f"Gemini raw response (first 300): {text[:300]}")
+
+            # Strip markdown code fences if present
+            text = re.sub(r"```json|```", "", text).strip()
+
+            match = re.search(r"\[.*?\]", text, re.DOTALL)
+            if not match:
+                logger.warning(f"No JSON array in response: {text[:200]}")
+                continue
+
+            parsed = json.loads(match.group())
+            if not isinstance(parsed, list):
+                continue
+
+            # Convert normalized 0-1 → pixels
             boxes = []
+            for item in parsed:
+                try:
+                    x1 = float(item.get("x1", 0))
+                    y1 = float(item.get("y1", 0))
+                    x2 = float(item.get("x2", 1))
+                    y2 = float(item.get("y2", 1))
+                    # Validate range
+                    if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+                        logger.warning(f"Invalid bbox: {item}")
+                        continue
+                    boxes.append({
+                        "label": item.get("label", "product"),
+                        "x1": int(x1 * img_width),
+                        "y1": int(y1 * img_height),
+                        "x2": int(x2 * img_width),
+                        "y2": int(y2 * img_height),
+                    })
+                except Exception as e:
+                    logger.warning(f"Bad box {item}: {e}")
 
-            for part in parts:
-                # Native bounding box format from Gemini
-                if "inlineData" in part or part.get("type") == "bbox":
-                    continue
+            if boxes:
+                logger.info(f"Detected {len(boxes)} product boxes")
+                return boxes
+            else:
+                logger.warning("All boxes were invalid")
 
-                text = part.get("text", "")
-
-                # Parse Gemini's native bbox format: <bbox>[y1,x1,y2,x2]</bbox>
-                bbox_matches = re.findall(
-                    r'<bbox>\s*\[?\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]?\s*</bbox>',
-                    text
-                )
-
-                if bbox_matches:
-                    for i, (y1n, x1n, y2n, x2n) in enumerate(bbox_matches):
-                        # Normalized 0-1000 → pixels
-                        x1 = int(int(x1n) / 1000 * img_width)
-                        y1 = int(int(y1n) / 1000 * img_height)
-                        x2 = int(int(x2n) / 1000 * img_width)
-                        y2 = int(int(y2n) / 1000 * img_height)
-                        boxes.append({"label": f"product_{i}", "x1": x1, "y1": y1, "x2": x2, "y2": y2})
-                    logger.info(f"Native bbox: {len(boxes)} products detected")
-                    return boxes
-
-                # Fallback: try JSON array format
-                match = re.search(r'\[.*?\]', text, re.DOTALL)
-                if match:
-                    try:
-                        parsed = json.loads(match.group())
-                        for item in parsed:
-                            if "bbox" in item:
-                                # [y1,x1,y2,x2] normalized
-                                bbox = item["bbox"]
-                                x1 = int(bbox[1] / 1000 * img_width)
-                                y1 = int(bbox[0] / 1000 * img_height)
-                                x2 = int(bbox[3] / 1000 * img_width)
-                                y2 = int(bbox[2] / 1000 * img_height)
-                                boxes.append({
-                                    "label": item.get("label", item.get("name", "product")),
-                                    "x1": x1, "y1": y1, "x2": x2, "y2": y2
-                                })
-                            elif all(k in item for k in ("x1","y1","x2","y2")):
-                                boxes.append(item)
-                        if boxes:
-                            logger.info(f"JSON bbox: {len(boxes)} products")
-                            return boxes
-                    except Exception:
-                        pass
-
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error attempt {attempt+1}: {e}")
         except Exception as e:
             logger.error(f"BBox detect attempt {attempt+1}: {e}")
             if attempt < 2:
