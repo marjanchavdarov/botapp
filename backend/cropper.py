@@ -96,7 +96,11 @@ def _sb_storage_put(path, img_bytes, content_type="image/jpeg"):
     except requests.exceptions.RequestException as e:
         logger.error(f"Storage upload failed: {e}")
         raise
-
+# In cropper.py, add this route
+@app.route("/validate")
+def validator_home():
+    return make_response(VALIDATOR_HTML, 200, {"Content-Type": "text/html"})
+    
 # ── IMAGE DOWNLOAD FUNCTION ──────────────────────────────────────────────────
 def download_image(url):
     """Download an image from a URL"""
