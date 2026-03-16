@@ -5,3 +5,5 @@ pymupdf
 gunicorn
 pillow
 pywebpush
+numpy
+scipy
