@@ -1251,3 +1251,103 @@ function toast(msg, type='success') {
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5002))
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+
+@app.route("/api/products/<product_id>")
+def get_product(product_id):
+    """Get details for a specific product"""
+    password = request.args.get("password","")
+    if password != Config.UPLOAD_PASSWORD:
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    try:
+        products = _sb_get("/rest/v1/products", {
+            "id": f"eq.{product_id}",
+            "select": "id,store,catalogue_name,page_number,product,product_image_url,page_image_url"
+        })
+        
+        if not products:
+            return jsonify({"error": "Product not found"}), 404
+        
+        product = products[0]
+        
+        return jsonify({
+            "id": product["id"],
+            "name": product.get("product", "Unknown"),
+            "store": product["store"],
+            "catalogue": product["catalogue_name"],
+            "page_number": product["page_number"],
+            "page_image_url": product.get("page_image_url"),
+            "product_image_url": product.get("product_image_url")
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to get product: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/feedback", methods=["POST"])
+def submit_feedback():
+    """Submit feedback for a product"""
+    data = request.json or {}
+    password = data.get("password", "")
+    
+    if password != Config.UPLOAD_PASSWORD:
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    product_id = data.get("product_id")
+    rating = data.get("rating")
+    notes = data.get("notes", "")
+    store = data.get("store")
+    catalogue = data.get("catalogue")
+    
+    if not all([product_id, rating, store, catalogue]):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    if rating not in ['good', 'bad', 'needs_fix']:
+        return jsonify({"error": "Invalid rating"}), 400
+    
+    # Store feedback in memory (or you can add to Supabase)
+    if not hasattr(app, 'feedback_store'):
+        app.feedback_store = []
+    
+    feedback_data = {
+        "product_id": product_id,
+        "store": store,
+        "catalogue_name": catalogue,
+        "rating": rating,
+        "notes": notes,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    app.feedback_store.append(feedback_data)
+    
+    return jsonify({"ok": True, "message": "Feedback saved"})
+
+@app.route("/api/feedback/stats")
+def feedback_stats():
+    """Get feedback statistics"""
+    password = request.args.get("password","")
+    if password != Config.UPLOAD_PASSWORD:
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    store = request.args.get("store")
+    catalogue = request.args.get("catalogue")
+    
+    if not hasattr(app, 'feedback_store'):
+        return jsonify({"total": 0, "good": 0, "bad": 0, "needs_fix": 0})
+    
+    feedback = app.feedback_store
+    
+    if store:
+        feedback = [f for f in feedback if f['store'] == store]
+    if catalogue:
+        feedback = [f for f in feedback if f['catalogue_name'] == catalogue]
+    
+    stats = {
+        "total": len(feedback),
+        "good": len([f for f in feedback if f['rating'] == 'good']),
+        "bad": len([f for f in feedback if f['rating'] == 'bad']),
+        "needs_fix": len([f for f in feedback if f['rating'] == 'needs_fix'])
+    }
+    
+    return jsonify(stats)
