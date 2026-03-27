@@ -1,1014 +1,1251 @@
-"""
-katalog.ai backend
-Plain requests to Supabase REST API — no SDK, no special library.
-SSL fix: verify=False on every call (Render's system CA bundle is stale).
-
-Install: pip install pymupdf flask requests certifi
-Render start command: gunicorn app:app --worker-class gthread -w 1 --threads 4 --bind 0.0.0.0:$PORT
-"""
-
+from flask import Flask, request, jsonify, send_from_directory
+from twilio.twiml.messaging_response import MessagingResponse
+import requests
 import os
 import json
-import uuid
 import base64
-import logging
 import threading
-import tempfile
-import time
-import re
+import uuid
 from datetime import datetime, date, timedelta
+from urllib.parse import quote, urlparse, urlunparse
+import re
+import logging
+import urllib.parse
+from functools import wraps
+import time
 
-import requests
-import fitz
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# ----------------------------------------------------------------------------
-# CONFIG & LOGGING
-# ----------------------------------------------------------------------------
+app = Flask(__name__, static_folder="static")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("katalog")
+# Configuration
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+# Validate environment variables
+if not GEMINI_API_KEY:
+    logger.error("GEMINI_API_KEY environment variable not set")
+    raise ValueError("GEMINI_API_KEY environment variable not set")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    logger.error("Supabase credentials not set")
+    raise ValueError("Supabase credentials not set")
 
-# Ensure static folder exists so Flask doesn't crash
-os.makedirs("static", exist_ok=True)
-CORS(app)  # Allow all origins — required for frontend/Supabase to call this API
+# Ensure SUPABASE_URL doesn't have trailing slash
+SUPABASE_URL = SUPABASE_URL.rstrip('/')
 
-
-class Config:
-    GEMINI_API_KEY       = os.environ.get("GEMINI_API_KEY")
-    SUPABASE_URL         = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY         = os.environ.get("SUPABASE_KEY")
-    SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
-    STORAGE_BUCKET       = "katalog-images"
-    BASE_URL             = os.environ.get("BASE_URL", "https://botapp-u7qa.onrender.com")
-
-
-CROATIA_STORES = [
-    {"id": "lidl",     "name": "Lidl",     "color": "#0050aa"},
-    {"id": "kaufland", "name": "Kaufland", "color": "#e30613"},
-    {"id": "spar",     "name": "Spar",     "color": "#1e6b3b"},
-    {"id": "konzum",   "name": "Konzum",   "color": "#ed1c24"},
-    {"id": "dm",       "name": "dm",       "color": "#e31837"},
-    {"id": "plodine",  "name": "Plodine",  "color": "#009640"},
-]
-
-# ----------------------------------------------------------------------------
-# SUPABASE — plain requests
-# verify=False fixes SSL handshake failures on Render (stale CA bundle).
-# ----------------------------------------------------------------------------
-
-def _db_headers():
+def db_headers():
     return {
-        "apikey":        Config.SUPABASE_KEY,
-        "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-        "Content-Type":  "application/json",
-        "Prefer":        "return=minimal",
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
     }
 
-def _sb_get(path, params=None):
-    r = requests.get(
-        f"{Config.SUPABASE_URL}{path}",
-        headers=_db_headers(), params=params,
-        timeout=20, verify=False
-    )
-    r.raise_for_status()
-    return r.json()
+# ─────────────────────────────────────────
+# STORAGE BUCKET SETUP
+# ─────────────────────────────────────────
 
-def _sb_post(path, data):
-    r = requests.post(
-        f"{Config.SUPABASE_URL}{path}",
-        headers=_db_headers(), json=data,
-        timeout=20, verify=False
-    )
-    r.raise_for_status()
-    return r
-
-def _sb_patch(path, data):
-    r = requests.patch(
-        f"{Config.SUPABASE_URL}{path}",
-        headers=_db_headers(), json=data,
-        timeout=20, verify=False
-    )
-    r.raise_for_status()
-    return r
-
-def _sb_storage_put(path, img_bytes):
-    url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/{path}"
-    key = Config.SUPABASE_SERVICE_KEY or Config.SUPABASE_KEY
-    logger.info(f"Uploading to: {url} ({len(img_bytes)} bytes) using {'service' if Config.SUPABASE_SERVICE_KEY else 'anon'} key")
-    r = requests.put(
-        url,
-        headers={
-            "apikey":        key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type":  "image/jpeg",
-            "x-upsert":      "true",
-        },
-        data=img_bytes, timeout=30, verify=False
-    )
-    logger.info(f"Storage response: {r.status_code} — {r.text[:500]}")
-    if not r.ok:
-        raise Exception(f"Storage {r.status_code}: {r.text[:300]}")
-    return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.STORAGE_BUCKET}/{path}"
-
-
-# ----------------------------------------------------------------------------
-# PRODUCTS
-# ----------------------------------------------------------------------------
-
-def get_products(store=None, query=None, limit=50):
-    today = date.today().isoformat()
+def ensure_bucket_exists():
+    """Check if the storage bucket exists, create if not"""
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY
+    }
+    
     try:
-        # Full-text search via RPC function
-        if query:
-            query_clean = re.sub(r"[^a-zA-Z0-9\sčćšđžČĆŠĐŽ]", "", query).strip()
-            if query_clean:
-                try:
-                    r = requests.post(
-                        f"{Config.SUPABASE_URL}/rest/v1/rpc/search_products",
-                        headers=_db_headers(),
-                        json={
-                            "q":            query_clean,
-                            "store_filter": store or None,
-                            "lim":          limit,
-                        },
-                        timeout=20, verify=False
-                    )
-                    if r.ok:
-                        return r.json() or []
-                except Exception as e:
-                    logger.error(f"FTS failed, falling back to ilike: {e}")
-                # Fallback to ilike if RPC fails
-                params = {
-                    "valid_from":  f"lte.{today}",
-                    "valid_until": f"gte.{today}",
-                    "is_expired":  "is.false",
-                    "limit":       limit,
-                    "order":       "store,product",
-                    "product":     f"ilike.*{query_clean}*",
-                }
-                if store:
-                    params["store"] = f"eq.{store}"
-                return _sb_get("/rest/v1/products", params) or []
-
-        # No query — return all active products filtered by store/day
-        params = {
-            "valid_from":  f"lte.{today}",
-            "valid_until": f"gte.{today}",
-            "is_expired":  "is.false",
-            "limit":       limit,
-            "order":       "store,product",
-        }
-        if store:
-            params["store"] = f"eq.{store}"
-        return _sb_get("/rest/v1/products", params) or []
-
+        # Check if bucket exists
+        response = requests.get(
+            f"{SUPABASE_URL}/storage/v1/bucket/katalog-images",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 404:
+            logger.info("Storage bucket 'katalog-images' not found, creating...")
+            # Create bucket
+            create_response = requests.post(
+                f"{SUPABASE_URL}/storage/v1/bucket",
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "name": "katalog-images",
+                    "public": True,
+                    "file_size_limit": 10485760,  # 10MB
+                    "allowed_mime_types": ["image/jpeg", "image/png", "image/jpg"]
+                },
+                timeout=10
+            )
+            if create_response.status_code in [200, 201]:
+                logger.info("✅ Storage bucket created successfully")
+                return True
+            else:
+                logger.error(f"Failed to create bucket: {create_response.text}")
+                return False
+        elif response.status_code == 200:
+            logger.info("✅ Storage bucket exists")
+            return True
+        else:
+            logger.error(f"Unexpected response checking bucket: {response.status_code}")
+            return False
     except Exception as e:
-        logger.error(f"get_products failed: {e}")
-        return []
-
-
-def save_products(products, store, page_num, page_url, catalogue_name, valid_from, valid_until):
-    """Bulk-insert products for one catalogue page."""
-    if not products:
-        return 0
-
-    records = [
-        {
-            "store":            store,
-            "product":          p.get("product", ""),
-            "brand":            p.get("brand"),
-            "quantity":         p.get("quantity"),
-            "original_price":   p.get("original_price"),
-            "sale_price":       p.get("sale_price"),
-            "discount_percent": p.get("discount_percent"),
-            "category":         p.get("category", "Ostalo"),
-            "valid_from":       valid_from,
-            "valid_until":      valid_until,
-            "page_image_url":   page_url,
-            "page_number":      page_num,
-            "catalogue_name":   catalogue_name,
-        }
-        for p in products
-        if p.get("sale_price")
-    ]
-
-    if not records:
-        return 0
-
-    try:
-        _sb_post("/rest/v1/products", records)
-        logger.info(f"Saved {len(records)} products from page {page_num}")
-        return len(records)
-    except Exception as e:
-        logger.error(f"save_products failed on page {page_num}: {e}")
-        return 0
-
-
-# ----------------------------------------------------------------------------
-# JOBS
-# ----------------------------------------------------------------------------
-
-def create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
-    try:
-        _sb_post("/rest/v1/jobs", {
-            "id":             job_id,
-            "store":          store,
-            "catalogue_name": catalogue_name,
-            "valid_from":     valid_from,
-            "valid_until":    valid_until,
-            "total_pages":    total_pages,
-            "current_page":   0,
-            "total_products": 0,
-            "status":         "processing",
-            "created_at":     datetime.now().isoformat(),
-        })
-        return True
-    except Exception as e:
-        logger.error(f"create_job failed: {e}")
+        logger.error(f"Error checking/creating bucket: {e}")
         return False
 
+# Call at startup
+ensure_bucket_exists()
 
-def update_job(job_id, **fields):
+# ─────────────────────────────────────────
+# HELPER FUNCTIONS
+# ─────────────────────────────────────────
+
+def sanitize_path_component(text):
+    """Remove special characters and spaces from path components"""
+    if not text:
+        return ""
+    # Replace spaces and special chars with underscore
+    text = str(text).lower()
+    # Keep only alphanumeric, underscore, hyphen
+    text = re.sub(r'[^a-zA-Z0-9_-]', '_', text)
+    # Remove multiple underscores
+    text = re.sub(r'_+', '_', text)
+    return text.strip('_')
+
+def encode_url(url):
+    """Properly encode URL for WhatsApp"""
+    if not url:
+        return url
+    
     try:
-        _sb_patch(f"/rest/v1/jobs?id=eq.{job_id}", fields)
+        parsed = urlparse(url)
+        # Encode each path segment
+        path_parts = parsed.path.split('/')
+        encoded_path = '/'.join(urllib.parse.quote(part) for part in path_parts)
+        
+        # Reconstruct URL
+        encoded = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            encoded_path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment
+        ))
+        return encoded
     except Exception as e:
-        logger.error(f"update_job failed for {job_id}: {e}")
+        logger.error(f"URL encoding error: {e}")
+        return url
 
-
-def get_job(job_id):
+def validate_image_for_whatsapp(image_url):
+    """Check if an image meets WhatsApp requirements"""
     try:
-        data = _sb_get(f"/rest/v1/jobs?id=eq.{job_id}")
-        return data[0] if data else None
+        # Check HTTPS
+        if not image_url.startswith("https://"):
+            return False, "URL must use HTTPS"
+        
+        # Test accessibility
+        response = requests.head(image_url, timeout=10, allow_redirects=True)
+        
+        if response.status_code != 200:
+            return False, f"HTTP {response.status_code}"
+        
+        # Check content type
+        content_type = response.headers.get("content-type", "").lower()
+        valid_types = ["image/jpeg", "image/jpg", "image/png", "image/gif"]
+        if not any(ct in content_type for ct in valid_types):
+            return False, f"Invalid content type: {content_type}"
+        
+        # Check file size (WhatsApp limit is ~5MB for images)
+        content_length = int(response.headers.get("content-length", 0))
+        if content_length > 5 * 1024 * 1024:  # 5MB
+            return False, f"Image too large: {content_length} bytes"
+        
+        return True, "Valid"
     except Exception as e:
-        logger.error(f"get_job failed for {job_id}: {e}")
-        return None
+        return False, str(e)
 
-
-# ----------------------------------------------------------------------------
-# IMAGE STORAGE
-# ----------------------------------------------------------------------------
-
-def upload_image(img_bytes, path):
-    try:
-        public_url = _sb_storage_put(path, img_bytes)
-        logger.info(f"Image uploaded: {public_url}")
-        return public_url
-    except Exception as e:
-        logger.error(f"upload_image failed: {e}")
-        return None
-
-
-# ----------------------------------------------------------------------------
-# GEMINI  (still uses requests — no official Python client for Gemini REST)
-# API key is never logged; scrubbed from any exception messages.
-# ----------------------------------------------------------------------------
-
-_GEMINI_BASE = (
-    "https://generativelanguage.googleapis.com"
-    "/v1beta/models/gemini-2.5-flash:generateContent"
-)
-
-
-def _gemini_url():
-    return f"{_GEMINI_BASE}?key={Config.GEMINI_API_KEY}"
-
-
-def _scrub(text):
-    """Remove the API key from any string before logging."""
-    if Config.GEMINI_API_KEY and Config.GEMINI_API_KEY in text:
-        return text.replace(Config.GEMINI_API_KEY, "***")
-    return text
-
-
-def extract_products(img_b64, store, page):
-    if not Config.GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set")
-        return []
-
-    prompt = f"""
-Izvuci SVE proizvode s ove stranice kataloga.
-
-Trgovina: {store}
-Stranica: {page}
-
-Vrati SAMO JSON niz — bez markdowna, bez objašnjenja. Svaki proizvod mora imati:
-- product: naziv na HRVATSKOM jeziku (npr. "Mlijeko 1L", "Piletina prsa", "Pivo svjetlo")
-- brand: naziv brenda ili null
-- sale_price: akcijska cijena u eurima (samo broj, npr. "1.99")
-- original_price: redovna cijena ili null
-- quantity: količina/veličina ili null (npr. "1L", "500g")
-- discount_percent: posto popusta ili null (npr. "20%")
-- category: jedna od [Meso i riba, Mliječni, Kruh i pekarski, Voće i povrće, Pića, Grickalice i slatkiši, Kućanstvo, Osobna njega, Ostalo]
-
-Primjer:
-[{{"product":"Mlijeko 1L","brand":"Vindija","sale_price":"0.99",
-   "original_price":"1.29","quantity":"1L","discount_percent":"23%",
-   "category":"Mliječni"}}]
-
-Ako nema vidljivih proizvoda, vrati [].
-"""
-
-    body = {
-        "contents": [{"parts": [
-            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
-            {"text": prompt},
-        ]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
-    }
-
-    for attempt in range(3):
-        try:
-            r = requests.post(_gemini_url(), json=body, timeout=90)
-
-            if r.status_code != 200:
-                logger.error(f"Gemini HTTP {r.status_code} on attempt {attempt+1}")
-                time.sleep(2 ** attempt)
-                continue
-
-            result = r.json()
-
-            if "candidates" not in result:
-                logger.error(f"Gemini missing candidates on attempt {attempt+1}")
-                time.sleep(2 ** attempt)
-                continue
-
-            text = result["candidates"][0]["content"]["parts"][0]["text"]
-            match = re.search(r"\[.*\]", text, re.DOTALL)
-
-            if not match:
-                logger.error(f"No JSON array in Gemini response (page {page})")
-                continue
-
-            products = json.loads(match.group())
-            if isinstance(products, list):
-                logger.info(f"Extracted {len(products)} products from page {page}")
-                return products
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Gemini JSON parse error attempt {attempt+1}: {e}")
-        except Exception as e:
-            logger.error(f"Gemini attempt {attempt+1} failed: {_scrub(str(e))}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-
-    return []
-
-
-def ask_ai(message, products):
-    if not Config.GEMINI_API_KEY:
-        return "Pronašao sam neke proizvode. Upiši broj stranice da vidiš sliku."
-
-    context = "\n".join(
-        f"- {p.get('store')}: {p.get('product')} - {p.get('sale_price')}€ "
-        f"(str. {p.get('page_number')})"
-        for p in products[:5]
-    )
-
-    prompt = f"""You are a helpful shopping assistant for Croatia.
-Today is {date.today().strftime('%d.%m.%Y.')}
-
-User question: {message}
-
-Products found:
-{context}
-
-Instructions:
-- Respond in Croatian
-- Be friendly and helpful
-- Mention store names and page numbers
-- End with "Stranice: X, Y, Z" if products have page numbers
-"""
-
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
-
-    try:
-        r = requests.post(_gemini_url(), json=body, timeout=60)
-        result = r.json()
-        return result["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        logger.error(f"ask_ai failed: {_scrub(str(e))}")
-        return "Dogodila se greška."
-
-
-# ----------------------------------------------------------------------------
-# PDF PROCESSOR  (runs in background daemon thread)
-# ----------------------------------------------------------------------------
-
-def process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_name):
-    doc = None
-    try:
-        doc = fitz.open(pdf_path)
-        total_pages    = len(doc)
-        total_products = 0
-
-        for page_num in range(total_pages):
-            try:
-                logger.info(f"Processing page {page_num+1}/{total_pages}")
-
-                page      = doc[page_num]
-                pix       = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_bytes = pix.tobytes("jpeg")
-                img_b64   = base64.b64encode(img_bytes).decode()
-
-                safe_store   = store.lower().replace(" ", "_")
-                safe_name    = catalogue_name.lower().replace(" ", "_")
-                filename     = f"{safe_store}_{safe_name}_page_{str(page_num+1).zfill(3)}.jpg"
-                storage_path = f"{safe_store}/{valid_from}/{filename}"
-
-                page_url       = upload_image(img_bytes, storage_path)
-                products       = extract_products(img_b64, store, page_num + 1)
-                saved          = save_products(
-                    products, store, page_num + 1,
-                    page_url, catalogue_name, valid_from, valid_until,
-                )
-                total_products += saved
-
-                update_job(job_id, current_page=page_num + 1, total_products=total_products)
-                logger.info(f"Page {page_num+1} done: {saved} products")
-
-            except Exception:
-                logger.exception(f"Page {page_num+1} failed — skipping")
-                continue
-
-        update_job(job_id, status="done")
-        logger.info(f"Job {job_id} complete: {total_products} products")
-
-    except Exception as e:
-        logger.error(f"Job {job_id} crashed: {e}")
-        update_job(job_id, status="error")
-
-    finally:
-        if doc:
-            doc.close()
-        try:
-            os.remove(pdf_path)
-            logger.info(f"Cleaned up: {pdf_path}")
-        except Exception as e:
-            logger.error(f"Failed to delete temp file: {e}")
-
-
-# ----------------------------------------------------------------------------
-# ROUTES
-# ----------------------------------------------------------------------------
-
-@app.route("/")
-def home():
-    # Try lowercase, then capital I (case-sensitive Linux filesystem)
-    for name in ["index.html", "Index.html"]:
-        try:
-            return send_from_directory(app.static_folder, name)
-        except Exception:
-            continue
-    return jsonify({"status": "ok", "service": "katalog.ai"})
-
-
-@app.route("/sw.js")
-def service_worker():
-    return send_from_directory(app.static_folder, "sw.js",
-                               mimetype="application/javascript")
-
-
-@app.route("/manifest.json")
-def manifest():
-    return send_from_directory(app.static_folder, "manifest.json")
-
-
-@app.route("/api/push/subscribe", methods=["POST"])
-def push_subscribe():
-    """Save push subscription from browser."""
-    try:
-        data = request.json or {}
-        sub  = data.get("subscription")
-        uid  = data.get("uid","")
-        if not sub:
-            return jsonify({"error": "subscription required"}), 400
-        _sb_post("/rest/v1/push_subscriptions", {
-            "uid":          uid,
-            "subscription": json.dumps(sub),
-            "created_at":   datetime.now().isoformat(),
-        })
-        return jsonify({"ok": True})
-    except Exception as e:
-        logger.error(f"push_subscribe failed: {e}")
-        return jsonify({"ok": False})
-
-@app.route("/api/push/notify", methods=["POST"])
-def push_notify():
-    """Send push notification to all subscribers. Protected by upload password."""
-    try:
-        data     = request.json or {}
-        password = data.get("password","")
-        if password != os.environ.get("UPLOAD_PASSWORD","katalog2026"):
-            return jsonify({"error": "Unauthorized"}), 403
-
-        title   = data.get("title", "katalog.ai")
-        body    = data.get("body",  "Novi katalog je dostupan!")
-        url     = data.get("url",   "/")
-
-        # Get all subscriptions
-        subs = _sb_get("/rest/v1/push_subscriptions", {"limit": 10000}) or []
-        sent = 0
-        failed = 0
-
-        for s in subs:
-            try:
-                sub = json.loads(s.get("subscription","{}"))
-                endpoint = sub.get("endpoint","")
-                if not endpoint:
-                    continue
-                # Use web-push library if available, otherwise log
-                try:
-                    from pywebpush import webpush, WebPushException
-                    webpush(
-                        subscription_info=sub,
-                        data=json.dumps({"title":title,"body":body,"url":url}),
-                        vapid_private_key=os.environ.get("VAPID_PRIVATE_KEY",""),
-                        vapid_claims={"sub": f"mailto:{os.environ.get('VAPID_EMAIL','admin@katalog.ai')}"},
-                    )
-                    sent += 1
-                except ImportError:
-                    logger.warning("pywebpush not installed — install it for push notifications")
-                    break
-            except Exception as e:
-                logger.error(f"Push failed for subscriber: {e}")
-                failed += 1
-
-        return jsonify({"sent": sent, "failed": failed, "total": len(subs)})
-    except Exception as e:
-        logger.error(f"push_notify failed: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/track", methods=["POST"])
-def api_track():
-    """Privacy-friendly analytics — no personal data, just counts."""
-    try:
-        data   = request.json or {}
-        uid    = data.get("uid", "unknown")[:32]
-        event  = data.get("event", "session")
-        ua     = data.get("ua", "")[:100]
-        today  = date.today().isoformat()
-
-        _sb_post("/rest/v1/analytics", {
-            "uid":        uid,
-            "event":      event,
-            "date":       today,
-            "user_agent": ua,
-            "created_at": datetime.now().isoformat(),
-        })
-    except Exception as e:
-        logger.error(f"api_track failed: {e}")
-    return jsonify({"ok": True})
-
-
-@app.route("/api/katalozi")
-def api_katalozi():
-    """Return distinct catalogue pages grouped by store."""
-    try:
-        store = request.args.get("store")
-        params = {
-            "select": "store,catalogue_name,page_number,page_image_url,valid_from,valid_until",
-            "page_image_url": "not.is.null",
-            "order": "store,catalogue_name,page_number",
-            "limit": 500,
-        }
-        if store:
-            params["store"] = f"eq.{store}"
-
-        rows = _sb_get("/rest/v1/products", params) or []
-
-        # Deduplicate by (store, catalogue_name, page_number)
-        seen = set()
-        pages = []
-        for r in rows:
-            key = (r.get("store"), r.get("catalogue_name"), r.get("page_number"))
-            if key not in seen and r.get("page_image_url"):
-                seen.add(key)
-                pages.append({
-                    "store":          r.get("store"),
-                    "catalogue_name": r.get("catalogue_name"),
-                    "page_number":    r.get("page_number"),
-                    "page_image_url": r.get("page_image_url"),
-                    "valid_from":     r.get("valid_from"),
-                    "valid_until":    r.get("valid_until"),
-                })
-        return jsonify(pages)
-    except Exception as e:
-        logger.error(f"api_katalozi failed: {e}")
-        return jsonify([])
-
-
-@app.route("/api/country")
-def get_country():
-    return jsonify({
-        "code":        "hr",
-        "name":        "croatia",
-        "language":    "hr",
-        "currency":    "€",
-        "date_format": "%d.%m.%Y.",
-        "stores":      CROATIA_STORES,
-    })
-
-
-@app.route("/api/products")
-def api_products():
-    store  = request.args.get("store")
-    query  = request.args.get("q")
-    page   = request.args.get("page", type=int)
-    offset = request.args.get("offset", 0, type=int)
-    limit  = request.args.get("limit", 50, type=int)
-    limit  = min(limit, 100)  # cap at 100
-
-    if page:
-        try:
-            params = {"page_number": f"eq.{page}", "limit": limit}
-            if store:
-                params["store"] = f"eq.{store}"
-            return jsonify(_sb_get("/rest/v1/products", params) or [])
-        except Exception as e:
-            logger.error(f"api_products page query failed: {e}")
-            return jsonify([])
-
-    products = get_products(store, query, limit=limit)
-    return jsonify(products)
-
-
-@app.route("/api/chat", methods=["POST"])
-def api_chat():
-    data    = request.json or {}
-    message = data.get("message", "").strip()
-
-    if not message:
-        return jsonify({"error": "Message required"}), 400
-
-    products = get_products(query=message, limit=10)
-    reply    = ask_ai(message, products)
-
-    page_numbers = [
-        int(p) for p in re.findall(r"stranic[ea] (\d+)", reply, re.IGNORECASE)
-        if 1 <= int(p) <= 500
-    ]
-
-    enhanced = [
-        {**p, "share_url": f"{Config.BASE_URL}/p/{p['id']}" if p.get("id") else None}
-        for p in products[:5]
-    ]
-
-    return jsonify({"reply": reply, "products": enhanced, "page_numbers": page_numbers[:3]})
-
-
-# ----------------------------------------------------------------------------
+# ─────────────────────────────────────────
 # UPLOAD TOOL
-# ----------------------------------------------------------------------------
-
-@app.route("/upload-tool")
-def upload_tool():
-    if os.path.exists("static/upload-tool.html"):
-        return send_from_directory(app.static_folder, "upload-tool.html")
-    from flask import make_response
-    return make_response(UPLOAD_HTML, 200, {"Content-Type": "text/html"})
-
+# ─────────────────────────────────────────
 
 UPLOAD_HTML = '''<!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>katalog.ai Upload</title>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box;font-family:monospace}
-        body{background:#111;color:#eee;padding:40px;max-width:800px;margin:0 auto}
-        h1{color:#00ff88;margin-bottom:30px}
-        .card{background:#1a1a1a;border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid #333}
-        label{color:#aaa;font-size:12px;text-transform:uppercase;display:block;margin-bottom:5px}
-        input,select{width:100%;padding:12px;background:#222;border:1px solid #444;color:#eee;border-radius:5px;margin-bottom:15px;font-size:16px}
-        button{background:#00ff88;color:#000;border:none;padding:15px;font-size:16px;font-weight:bold;border-radius:5px;cursor:pointer;width:100%}
-        button:hover{background:#00cc66}
-        button:disabled{background:#444;color:#888;cursor:not-allowed}
-        .progress-bar{background:#222;height:30px;border-radius:5px;margin:20px 0;overflow:hidden;display:none}
-        .progress-fill{background:#00ff88;height:100%;width:0%;transition:width 0.3s;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#000}
-        #log{background:#000;padding:20px;border-radius:5px;font-size:13px;line-height:1.6;max-height:400px;overflow-y:auto;border:1px solid #333}
-    </style>
+<meta charset="UTF-8">
+<title>katalog.ai Upload</title>
+<style>
+body{font-family:monospace;background:#111;color:#eee;padding:40px;max-width:700px;margin:0 auto}
+h1{color:#00ff88}
+input{background:#222;border:1px solid #444;color:#eee;padding:8px;width:100%;margin:5px 0 15px 0;font-family:monospace;display:block;box-sizing:border-box}
+label{color:#aaa;font-size:13px}
+button{background:#00ff88;color:#000;border:none;padding:15px;font-weight:bold;font-size:16px;cursor:pointer;width:100%;margin-top:10px}
+button:disabled{background:#444;color:#888;cursor:not-allowed}
+#log{background:#000;padding:20px;margin-top:20px;min-height:100px;font-size:12px;line-height:1.8;white-space:pre-wrap}
+#bar-wrap{background:#222;height:24px;margin-top:10px;display:none;border-radius:4px;overflow:hidden}
+#fill{background:#00ff88;height:24px;width:0%;transition:width 0.5s;display:flex;align-items:center;justify-content:center;font-size:11px;color:#000;font-weight:bold}
+</style>
 </head>
 <body>
-    <h1>📤 katalog.ai — Upload Catalog</h1>
-    <div class="card">
-        <label>PDF File</label>
-        <input type="file" id="file" accept=".pdf">
-        <label>Store</label>
-        <select id="store">
-            <option value="lidl">Lidl</option>
-            <option value="kaufland">Kaufland</option>
-            <option value="spar">Spar</option>
-            <option value="konzum">Konzum</option>
-            <option value="dm">dm</option>
-            <option value="plodine">Plodine</option>
-        </select>
-        <label>Valid From (YYYY-MM-DD)</label>
-        <input type="text" id="validFrom" placeholder="2026-03-02">
-        <label>Valid Until (empty = 14 days auto)</label>
-        <input type="text" id="validUntil" placeholder="2026-03-16">
-        <button id="uploadBtn" onclick="upload()">Process Catalog</button>
-    </div>
-    <div class="progress-bar" id="progressBar">
-        <div class="progress-fill" id="progressFill">0%</div>
-    </div>
-    <div id="log">Ready.</div>
+<h1>katalog.ai - Upload</h1>
+<label>PDF File:</label>
+<input type="file" id="pdffile" accept=".pdf">
+<label>Store:</label>
+<input type="text" id="store" placeholder="Lidl">
+<label>Valid From (YYYY-MM-DD):</label>
+<input type="text" id="validfrom" placeholder="2026-03-02">
+<label>Valid Until (empty = 14 days auto):</label>
+<input type="text" id="validuntil" placeholder="2026-03-16">
+<label>Resume Job ID (optional):</label>
+<input type="text" id="resumejob" placeholder="leave empty for new upload">
+<button id="btn" onclick="go()">Process</button>
+<div id="bar-wrap"><div id="fill">0%</div></div>
+<div id="log">Ready.</div>
+<script>
+var pollInterval = null;
+var lastPage = 0;
+var lastProducts = 0;
+var totalPages = 0;
 
-    <script>
-        let pollInterval = null, totalPages = 0;
-        let lastPage = 0, lastProducts = 0;
-        let failCount = 0, pollStartTime = null;
-        const MAX_FAILS = 5, MAX_MINUTES = 15;
+function go() {
+  var f = document.getElementById("pdffile").files[0];
+  var s = document.getElementById("store").value;
+  var vf = document.getElementById("validfrom").value;
+  var vu = document.getElementById("validuntil").value;
+  var rj = document.getElementById("resumejob").value.trim();
+  if (!f) { alert("Pick a file"); return; }
+  if (!s) { alert("Enter store"); return; }
+  if (!vf) { alert("Enter date"); return; }
+  if (!vu) {
+    var d = new Date(vf);
+    d.setDate(d.getDate() + 14);
+    vu = d.toISOString().split("T")[0];
+  }
+  var btn = document.getElementById("btn");
+  btn.disabled = true;
+  btn.textContent = "Processing...";
+  var log = document.getElementById("log");
+  log.textContent = "Uploading file...\\n";
+  document.getElementById("bar-wrap").style.display = "block";
+  document.getElementById("fill").style.width = "0%";
+  document.getElementById("fill").textContent = "0%";
+  lastPage = 0;
+  lastProducts = 0;
+  var fd = new FormData();
+  fd.append("file", f);
+  fd.append("store", s);
+  fd.append("valid_from", vf);
+  fd.append("valid_until", vu);
+  if (rj) fd.append("resume_job_id", rj);
+  fetch("/upload", { method: "POST", body: fd }).then(function(r) {
+    return r.json();
+  }).then(function(data) {
+    if (data.error) {
+      log.textContent += "ERROR: " + data.error + "\\n";
+      btn.disabled = false;
+      btn.textContent = "Process";
+      return;
+    }
+    totalPages = data.total_pages;
+    log.textContent += "Job started! " + data.total_pages + " pages\\n";
+    if (data.start_page > 0) log.textContent += "Resuming from page " + data.start_page + "\\n";
+    log.textContent += "Job ID: " + data.job_id + "\\n";
+    log.textContent += "─────────────────────────────\\n";
+    pollInterval = setInterval(function() { poll(data.job_id); }, 4000);
+  }).catch(function(e) {
+    log.textContent += "ERROR: " + e.message + "\\n";
+    btn.disabled = false;
+    btn.textContent = "Process";
+  });
+}
 
-        function log(msg, type="info") {
-            const colors = {success:"#00ff88", error:"#ff5555", info:"#66ccff"};
-            const el = document.getElementById("log");
-            el.innerHTML += `<span style="color:${colors[type]||"#eee"}">${msg}</span><br>`;
-            el.scrollTop = el.scrollHeight;
-        }
-
-        function stopPolling(msg) {
-            clearInterval(pollInterval); pollInterval = null;
-            if (msg) log(msg, "error");
-            const btn = document.getElementById("uploadBtn");
-            btn.disabled = false; btn.textContent = "Process Catalog";
-        }
-
-        async function upload() {
-            const file = document.getElementById("file").files?.[0];
-            if (!file) { log("❌ Select a PDF file", "error"); return; }
-
-            document.getElementById("log").innerHTML = "";
-            failCount = 0; lastPage = 0; lastProducts = 0;
-
-            let validFrom = document.getElementById("validFrom").value
-                         || new Date().toISOString().split("T")[0];
-            let validUntil = document.getElementById("validUntil").value;
-            if (!validUntil) {
-                const d = new Date(validFrom);
-                d.setDate(d.getDate() + 14);
-                validUntil = d.toISOString().split("T")[0];
-                log(`📅 Auto valid until: ${validUntil}`, "info");
-            }
-
-            const btn = document.getElementById("uploadBtn");
-            btn.disabled = true; btn.textContent = "Processing...";
-            document.getElementById("progressBar").style.display = "block";
-            document.getElementById("progressFill").style.width = "0%";
-            document.getElementById("progressFill").textContent = "0%";
-
-            const form = new FormData();
-            form.append("file", file);
-            form.append("store", document.getElementById("store").value);
-            form.append("valid_from", validFrom);
-            form.append("valid_until", validUntil);
-
-            try {
-                log(`📤 Uploading: ${file.name}`, "info");
-                const res = await fetch("/upload", { method: "POST", body: form });
-                if (!res.ok) {
-                    const err = await res.json().catch(() => ({}));
-                    throw new Error(err.error || `HTTP ${res.status}`);
-                }
-                const data = await res.json();
-                totalPages = data.pages;
-                pollStartTime = Date.now();
-                log(`✅ Job started — ${totalPages} pages`, "success");
-                log(`🆔 Job ID: ${data.job_id}`, "info");
-                if (pollInterval) clearInterval(pollInterval);
-                pollInterval = setInterval(() => poll(data.job_id), 2000);
-            } catch(e) {
-                log(`❌ Upload failed: ${e.message}`, "error");
-                stopPolling();
-            }
-        }
-
-        async function poll(jobId) {
-            if (Date.now() - pollStartTime > MAX_MINUTES * 60000) {
-                stopPolling(`⏱️ Timed out after ${MAX_MINUTES} minutes.`); return;
-            }
-            try {
-                const res = await fetch(`/status/${jobId}`);
-                if (res.status === 404) {
-                    if (++failCount >= MAX_FAILS)
-                        stopPolling("❌ Job not found — check server logs.");
-                    return;
-                }
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                failCount = 0;
-
-                const data = await res.json();
-                const cur = data.current_page || 0, prods = data.total_products || 0;
-
-                // Pick up total_pages from the job record once background thread writes it
-                if (data.total_pages && data.total_pages > 0) totalPages = data.total_pages;
-
-                if (cur > lastPage) {
-                    for (let i = lastPage + 1; i <= cur; i++) {
-                        const total = totalPages > 0 ? totalPages : "?";
-                        let line = `📄 Page ${String(i).padStart(3,"0")} / ${total}`;
-                        if (i === cur) line += `  |  +${prods - lastProducts} products  |  total: ${prods}`;
-                        log(line, "success");
-                    }
-                    lastPage = cur; lastProducts = prods;
-                    if (totalPages > 0) {
-                        const pct = Math.round(cur / totalPages * 100);
-                        document.getElementById("progressFill").style.width = pct + "%";
-                        document.getElementById("progressFill").textContent = pct + "%";
-                    }
-                }
-
-                if (data.status === "done") {
-                    clearInterval(pollInterval); pollInterval = null;
-                    log(`✅ DONE! ${prods} products saved.`, "success");
-                    document.getElementById("uploadBtn").disabled = false;
-                    document.getElementById("uploadBtn").textContent = "Process Another";
-                }
-                if (data.status === "error") stopPolling("❌ Job failed — check server logs.");
-
-            } catch(e) {
-                if (++failCount >= MAX_FAILS)
-                    stopPolling(`❌ Polling stopped: ${e.message}`);
-            }
-        }
-    </script>
+function poll(job_id) {
+  fetch("/status/" + job_id).then(function(r) {
+    return r.json();
+  }).then(function(data) {
+    var log = document.getElementById("log");
+    var cur = data.current_page || 0;
+    var curProducts = data.total_products || 0;
+    if (cur > lastPage) {
+      for (var i = lastPage + 1; i <= cur; i++) {
+        var line = "Page " + String(i).padStart(3, "0") + " / " + totalPages;
+        if (i === cur) line += "  |  +" + (curProducts - lastProducts) + " products  |  total: " + curProducts;
+        log.textContent += line + "\\n";
+      }
+      lastPage = cur;
+      lastProducts = curProducts;
+      log.scrollTop = log.scrollHeight;
+      var pct = Math.round((cur / totalPages) * 100);
+      document.getElementById("fill").style.width = pct + "%";
+      document.getElementById("fill").textContent = pct + "%";
+    }
+    if (data.status === "done") {
+      clearInterval(pollInterval);
+      log.textContent += "─────────────────────────────\\n";
+      log.textContent += "DONE! " + data.total_products + " products saved!\\n";
+      document.getElementById("fill").style.width = "100%";
+      document.getElementById("fill").textContent = "100% DONE!";
+      document.getElementById("btn").disabled = false;
+      document.getElementById("btn").textContent = "Process Another";
+    } else if (data.status === "error") {
+      clearInterval(pollInterval);
+      log.textContent += "ERROR - check Render logs\\n";
+      document.getElementById("btn").disabled = false;
+      document.getElementById("btn").textContent = "Process";
+    }
+  }).catch(function(e) { console.log("Poll error:", e); });
+}
+</script>
 </body>
 </html>'''
 
+@app.route("/upload-tool")
+def upload_tool():
+    return UPLOAD_HTML
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    file        = request.files.get("file")
-    store       = request.form.get("store")
-    valid_from  = request.form.get("valid_from", date.today().isoformat())
-    valid_until = request.form.get("valid_until")
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        logger.error("PyMuPDF not installed")
+        return jsonify({"error": "PyMuPDF not installed"}), 500
 
-    if not file or not store:
-        return jsonify({"error": "file and store required"}), 400
+    f = request.files.get("file")
+    sn = request.form.get("store", "").strip()
+    vf = request.form.get("valid_from", "").strip()
+    vu = request.form.get("valid_until", "").strip()
 
-    if not valid_until:
-        d = datetime.strptime(valid_from, "%Y-%m-%d")
-        valid_until = (d + timedelta(days=14)).strftime("%Y-%m-%d")
+    if not f or not sn or not vf:
+        return jsonify({"error": "Missing fields"}), 400
 
-    # Save PDF — slow for large files. Everything else runs in background
-    # so we respond before Render's 30s proxy timeout.
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        file.save(tmp.name)
-        pdf_path       = tmp.name
-        catalogue_name = file.filename.replace(".pdf", "")
+    # Validate file
+    if not f.filename.lower().endswith('.pdf'):
+        return jsonify({"error": "File must be PDF"}), 400
 
-    job_id = str(uuid.uuid4())[:8]
+    if not vu:
+        d = datetime.strptime(vf, "%Y-%m-%d")
+        vu = (d + timedelta(days=14)).strftime("%Y-%m-%d")
 
-    def run():
+    fd = f.read()
+    fn = f.filename
+    cat_name = fn.replace(".pdf", "")
+
+    try:
+        import fitz
+        tmp = f"/tmp/{uuid.uuid4()}.pdf"
+        with open(tmp, "wb") as fp:
+            fp.write(fd)
+        doc = fitz.open(tmp)
+        total_pages = len(doc)
+        doc.close()
+        os.remove(tmp)
+    except Exception as e:
+        logger.error(f"Could not read PDF: {e}")
+        return jsonify({"error": "Could not read PDF: " + str(e)}), 500
+
+    resume_job_id = request.form.get("resume_job_id", "").strip()
+    if resume_job_id:
+        existing = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jobs?id=eq.{resume_job_id}",
+            headers=db_headers()
+        )
+        if existing.status_code == 200 and existing.json():
+            job = existing.json()[0]
+            job_id = resume_job_id
+            start_page = job.get("current_page", 0)
+            total_products_so_far = job.get("total_products", 0)
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/jobs?id=eq.{job_id}",
+                headers={**db_headers(), "Prefer": "return=minimal"},
+                json={"status": "processing"}
+            )
+        else:
+            return jsonify({"error": "Job ID not found"}), 400
+    else:
+        job_id = str(uuid.uuid4())[:8]
+        start_page = 0
+        total_products_so_far = 0
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/jobs",
+            headers={**db_headers(), "Prefer": "return=minimal"},
+            json={
+                "id": job_id,
+                "store": sn,
+                "catalogue_name": cat_name,
+                "valid_from": vf,
+                "valid_until": vu,
+                "total_pages": total_pages,
+                "current_page": 0,
+                "total_products": 0,
+                "status": "processing"
+            }
+        )
+
+    def process():
         try:
-            doc         = fitz.open(pdf_path)
-            total_pages = len(doc)
+            import fitz
+            tmp = f"/tmp/{job_id}.pdf"
+            with open(tmp, "wb") as fp:
+                fp.write(fd)
+            doc = fitz.open(tmp)
+            cat_fp = None
+            total_products = total_products_so_far
+
+            for i in range(start_page, total_pages):
+                try:
+                    page = doc[i]
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    img_bytes = pix.tobytes("jpeg")
+                    img_b64 = base64.b64encode(img_bytes).decode()
+
+                    # Sanitize path components
+                    safe_store = sanitize_path_component(sn)
+                    safe_date = vf.replace("-", "_")
+                    safe_filename = sanitize_path_component(f"{sn}_{cat_name}_page_{str(i+1).zfill(3)}.jpg")
+                    
+                    storage_path = f"{safe_store}/{safe_date}/{safe_filename}"
+                    page_url = upload_image(img_bytes, storage_path)
+
+                    products, fine_print = extract(img_b64, sn, i+1, vf)
+                    if fine_print:
+                        cat_fp = (cat_fp + " " + fine_print) if cat_fp else fine_print
+                    
+                    saved = save_products(products, sn, i+1, page_url, cat_name, vf, vu)
+                    total_products += saved
+                    
+                    requests.patch(
+                        f"{SUPABASE_URL}/rest/v1/jobs?id=eq.{job_id}",
+                        headers={**db_headers(), "Prefer": "return=minimal"},
+                        json={"current_page": i + 1, "total_products": total_products, "fine_print": cat_fp}
+                    )
+                    
+                    logger.info(f"Page {i+1}/{total_pages} processed: {saved} products")
+                    
+                except Exception as e:
+                    logger.error(f"Page {i+1} error: {e}")
+                    continue
+
             doc.close()
+            os.remove(tmp)
+            save_catalogue(sn, cat_name, vf, vu, cat_fp, total_pages, total_products)
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/jobs?id=eq.{job_id}",
+                headers={**db_headers(), "Prefer": "return=minimal"},
+                json={"status": "done", "current_page": total_pages, "total_products": total_products}
+            )
+            logger.info(f"Job {job_id} completed successfully")
+            
         except Exception as e:
-            logger.error(f"Failed to open PDF: {e}")
-            try: os.remove(pdf_path)
-            except Exception: pass
-            return
+            logger.error(f"Job error: {e}")
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/jobs?id=eq.{job_id}",
+                headers={**db_headers(), "Prefer": "return=minimal"},
+                json={"status": "error"}
+            )
 
-        if not create_job(job_id, store, catalogue_name, valid_from, valid_until, total_pages):
-            try: os.remove(pdf_path)
-            except Exception: pass
-            return
+    t = threading.Thread(target=process)
+    t.daemon = True
+    t.start()
 
-        process_catalog(job_id, pdf_path, store, valid_from, valid_until, catalogue_name)
-
-    threading.Thread(target=run, daemon=True).start()
-
-    # Respond immediately — frontend polls /status which has total_pages once job is created
-    return jsonify({"job_id": job_id, "pages": 0})
-
+    return jsonify({"job_id": job_id, "total_pages": total_pages, "start_page": start_page})
 
 @app.route("/status/<job_id>")
 def status(job_id):
-    job = get_job(job_id)
-    if job:
-        return jsonify(job)
-    return jsonify({"error": "not found"}), 404
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/jobs?id=eq.{job_id}",
+        headers=db_headers()
+    )
+    if r.status_code == 200 and r.json():
+        return jsonify(r.json()[0])
+    return jsonify({"error": "Job not found"}), 404
 
+# ─────────────────────────────────────────
+# GEMINI EXTRACT
+# ─────────────────────────────────────────
 
-@app.route("/debug/health")
-def health():
-    return jsonify({
-        "status":   "ok",
-        "time":     datetime.now().isoformat(),
-        "supabase": bool(Config.SUPABASE_KEY),
-        "gemini":   bool(Config.GEMINI_API_KEY),
-    })
+def extract(img_b64, store, page_num, valid_from):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
+    try:
+        year = str(datetime.strptime(valid_from, "%Y-%m-%d").year)
+    except:
+        year = str(date.today().year)
 
+    prompt = (
+        f"Page {page_num} of {store} catalogue. "
+        "Extract ONLY real purchasable products that have a clear price in euros. "
+        "Translate ALL product names, brands and categories to ENGLISH. "
+        "STRICT RULES: "
+        "1. Product MUST have a visible euro price - skip if no price. "
+        "2. Skip promotional items, gifts, loyalty rewards, contest prizes, stuffed animals. "
+        "3. Convert dates to YYYY-MM-DD, year is {year}. od/von=valid_from, do/bis=valid_until. "
+        "4. fine_print ONLY for legal disclaimers like limited quantity, while supplies last - otherwise null. "
+        "Return ONLY JSON array: [{\"product\":\"English name\",\"brand\":\"brand or null\","
+        "\"quantity\":\"250g or null\",\"original_price\":\"2.99 or null\",\"sale_price\":\"1.99\","
+        "\"discount_percent\":\"33% or null\",\"valid_from\":\"{year}-03-02 or null\","
+        "\"valid_until\":\"{year}-03-08 or null\",\"category\":\"English category\","
+        "\"subcategory\":\"English subcategory\",\"fine_print\":\"disclaimer or null\"}] "
+        "Categories: Meat and Fish, Dairy, Bread and Bakery, Fruit and Vegetables, Drinks, "
+        "Snacks and Sweets, Canned Food, Cosmetics and Hygiene, Household and Cleaning, "
+        "Tools and Construction, Home and Garden, Electronics, Clothing and Shoes, Pet Food, "
+        "Health and Pharmacy, Other. If no valid products return: []"
+    )
+    
+    body = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+                {"text": prompt}
+            ]
+        }],
+        "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.1}
+    }
+    
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json=body, timeout=45)
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            text = text.replace("```json", "").replace("```", "").strip()
+            result = json.loads(text)
+            if not isinstance(result, list):
+                return [], None
+            fine_print = None
+            for p in result:
+                if p.get("fine_print") and p.get("fine_print") not in [None, "null"]:
+                    fine_print = p.get("fine_print")
+                    break
+            return result, fine_print
+        except Exception as e:
+            logger.error(f"Gemini error page {page_num} attempt {attempt+1}: {e}")
+            if attempt == 2:
+                return [], None
+            continue
+    return [], None
 
-@app.route("/debug/supabase")
-def debug_supabase():
-    """Hit this in your browser to test Supabase connectivity."""
-    results = {}
+# ─────────────────────────────────────────
+# SUPABASE HELPERS
+# ─────────────────────────────────────────
 
-    # Check env vars are set
-    results["SUPABASE_URL_set"]  = bool(Config.SUPABASE_URL)
-    results["SUPABASE_KEY_set"]  = bool(Config.SUPABASE_KEY)
-    results["SUPABASE_URL"]      = Config.SUPABASE_URL or "NOT SET"
+def upload_image(img_bytes, storage_path):
+    """Upload image to Supabase storage with fallback options"""
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true"
+    }
+    
+    # Try main path
+    try:
+        response = requests.put(
+            f"{SUPABASE_URL}/storage/v1/object/katalog-images/{storage_path}",
+            headers=headers,
+            data=img_bytes,
+            timeout=30
+        )
+        
+        if response.status_code in [200, 201]:
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/katalog-images/{storage_path}"
+            logger.info(f"✅ Image uploaded: {public_url}")
+            return public_url
+        
+        logger.warning(f"Upload to main path failed: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"Upload to main path exception: {e}")
+    
+    # Fallback: try without subfolders
+    try:
+        fallback_path = storage_path.replace("/", "_")
+        response2 = requests.put(
+            f"{SUPABASE_URL}/storage/v1/object/katalog-images/{fallback_path}",
+            headers=headers,
+            data=img_bytes,
+            timeout=30
+        )
+        
+        if response2.status_code in [200, 201]:
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/katalog-images/{fallback_path}"
+            logger.info(f"✅ Image uploaded to fallback path: {public_url}")
+            return public_url
+    except Exception as e:
+        logger.error(f"Fallback upload failed: {e}")
+    
+    return None
 
-    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
-        return jsonify(results), 500
+def parse_date(s):
+    if not s or s == "null":
+        return None
+    for fmt in ["%Y-%m-%d", "%d.%m.%Y.", "%d.%m.%Y"]:
+        try:
+            return datetime.strptime(s.strip(), fmt).strftime("%Y-%m-%d")
+        except:
+            continue
+    return None
 
-    # Try a simple GET
+def save_products(products, store, page_num, page_url, catalogue_name, valid_from, valid_until):
+    if not products:
+        return 0
+    
+    records = []
+    for p in products:
+        if not p.get("sale_price") or p.get("sale_price") in [None, "null", ""]:
+            continue
+        
+        vu = parse_date(p.get("valid_until")) or valid_until
+        vf = parse_date(p.get("valid_from")) or valid_from
+        if not vu:
+            vu = valid_until
+        
+        # Ensure page_url is stored
+        final_page_url = page_url if page_url else None
+        
+        records.append({
+            "store": store,
+            "product": p.get("product", ""),
+            "brand": p.get("brand") if p.get("brand") not in [None, "null"] else None,
+            "quantity": p.get("quantity") if p.get("quantity") not in [None, "null"] else None,
+            "original_price": p.get("original_price") if p.get("original_price") not in [None, "null"] else None,
+            "sale_price": p.get("sale_price", ""),
+            "discount_percent": p.get("discount_percent") if p.get("discount_percent") not in [None, "null"] else None,
+            "category": p.get("category", "Other"),
+            "subcategory": p.get("subcategory"),
+            "valid_from": vf,
+            "valid_until": vu,
+            "is_expired": False,
+            "page_image_url": final_page_url,
+            "page_number": page_num,
+            "catalogue_name": catalogue_name,
+            "catalogue_week": datetime.now().strftime("%Y-W%V")
+        })
+    
+    if not records:
+        return 0
+    
+    try:
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/products",
+            headers={**db_headers(), "Prefer": "return=minimal"},
+            json=records,
+            timeout=30
+        )
+        if r.status_code in [200, 201]:
+            logger.info(f"Saved {len(records)} products for page {page_num}")
+            return len(records)
+        else:
+            logger.error(f"Failed to save products: {r.status_code} - {r.text[:200]}")
+            return 0
+    except Exception as e:
+        logger.error(f"Exception saving products: {e}")
+        return 0
+
+def save_catalogue(store, catalogue_name, valid_from, valid_until, fine_print, pages, products_count):
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/catalogues",
+            headers={**db_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            json={
+                "store": store,
+                "catalogue_name": catalogue_name,
+                "valid_from": valid_from,
+                "valid_until": valid_until,
+                "fine_print": fine_print,
+                "pages": pages,
+                "products_count": products_count
+            },
+            timeout=30
+        )
+    except Exception as e:
+        logger.error(f"Failed to save catalogue: {e}")
+
+# ─────────────────────────────────────────
+# WHATSAPP BOT
+# ─────────────────────────────────────────
+
+def get_products():
+    today = date.today().strftime("%Y-%m-%d")
+    future = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+    h = db_headers()
+    
+    try:
+        active = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products?valid_from=lte.{today}&or=(valid_until.gte.{today},valid_until.is.null)&is_expired=eq.false&limit=300&order=store",
+            headers=h,
+            timeout=30
+        )
+        upcoming = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products?valid_from=gt.{today}&valid_from=lte.{future}&is_expired=eq.false&limit=100&order=valid_from",
+            headers=h,
+            timeout=30
+        )
+        catalogues = requests.get(
+            f"{SUPABASE_URL}/rest/v1/catalogues?valid_until=gte.{today}&select=store,fine_print",
+            headers=h,
+            timeout=30
+        )
+        
+        fine_prints = {}
+        if catalogues.status_code == 200:
+            for c in catalogues.json():
+                if c.get("fine_print"):
+                    fine_prints[c["store"]] = c["fine_print"]
+        
+        return (
+            active.json() if active.status_code == 200 else [],
+            upcoming.json() if upcoming.status_code == 200 else [],
+            fine_prints
+        )
+    except Exception as e:
+        logger.error(f"Error getting products: {e}")
+        return [], [], {}
+
+def get_or_create_user(phone):
+    phone_encoded = quote(phone, safe='')
+    h = db_headers()
+    
     try:
         r = requests.get(
-            f"{Config.SUPABASE_URL}/rest/v1/jobs?limit=1",
-            headers={
-                "apikey":        Config.SUPABASE_KEY,
-                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-            },
-            timeout=10,
-            verify=False,
+            f"{SUPABASE_URL}/rest/v1/users?phone=eq.{phone_encoded}",
+            headers=h,
+            timeout=30
         )
-        results["status_code"] = r.status_code
-        results["response"]    = r.text[:300]
-        results["success"]     = r.status_code < 300
+        
+        if r.status_code == 200 and r.json():
+            return r.json()[0]
+        
+        # Create new user
+        new_user = {
+            "phone": phone,
+            "total_searches": 0,
+            "conversation": [],
+            "created_at": datetime.now().isoformat(),
+            "last_active": datetime.now().isoformat()
+        }
+        
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/users",
+            headers={**h, "Prefer": "return=minimal"},
+            json=new_user,
+            timeout=30
+        )
+        
+        return new_user
     except Exception as e:
-        results["error"]   = str(e)
-        results["success"] = False
+        logger.error(f"Error in get_or_create_user: {e}")
+        return {"phone": phone, "total_searches": 0, "conversation": []}
 
+def update_user(phone, updates):
+    phone_encoded = quote(phone, safe='')
+    try:
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/users?phone=eq.{phone_encoded}",
+            headers={**db_headers(), "Prefer": "return=minimal"},
+            json={**updates, "last_active": datetime.now().isoformat()},
+            timeout=10
+        )
+        if r.status_code not in [200, 201, 204]:
+            logger.error(f"update_user failed: {r.status_code} - {r.text[:200]}")
+    except Exception as e:
+        logger.error(f"update_user exception: {e}")
+
+def get_conversation(user):
+    conv = user.get("conversation") or []
+    if isinstance(conv, list):
+        return conv
+    try:
+        return json.loads(conv) if conv else []
+    except:
+        return []
+
+def save_conversation(phone, conversation, user_message, bot_reply):
+    conv = conversation or []
+    conv.append({
+        "role": "user",
+        "content": user_message[:500],
+        "time": datetime.now().strftime("%H:%M")
+    })
+    conv.append({
+        "role": "bot",
+        "content": bot_reply[:500],
+        "time": datetime.now().strftime("%H:%M")
+    })
+    conv = conv[-30:]  # Keep last 30 messages
+    
+    phone_encoded = quote(phone, safe='')
+    try:
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/users?phone=eq.{phone_encoded}",
+            headers={**db_headers(), "Prefer": "return=minimal"},
+            json={"conversation": conv, "last_active": datetime.now().isoformat()},
+            timeout=10
+        )
+        logger.info(f"save_conversation status: {r.status_code}")
+    except Exception as e:
+        logger.error(f"save_conversation error: {e}")
+    
+    return conv
+
+def filter_products(message, active, upcoming):
+    translations = {
+        "mlijeko": "milk", "mlijeka": "milk", "mlijecni": "dairy", "mlijecnih": "dairy",
+        "meso": "meat", "mesa": "meat", "mesni": "meat",
+        "pile": "chicken", "piletina": "chicken", "pileca": "chicken",
+        "kruh": "bread", "kruha": "bread", "pecivo": "bakery",
+        "voce": "fruit", "voca": "fruit", "povrce": "vegetables", "povrca": "vegetables",
+        "jogurt": "yogurt", "jogurta": "yogurt",
+        "sir": "cheese", "sira": "cheese",
+        "grickalice": "snacks", "slatkisi": "sweets",
+        "cokolada": "chocolate", "cokolade": "chocolate",
+        "pivo": "beer", "vino": "wine", "sokovi": "juice", "sok": "juice",
+        "ulje": "oil", "brasno": "flour", "secer": "sugar",
+        "kava": "coffee", "caj": "tea",
+        "riba": "fish", "ribe": "fish",
+        "svinjetina": "pork", "svinjski": "pork", "svinjska": "pork",
+        "govedina": "beef", "jaja": "eggs", "jaje": "eggs",
+        "sapun": "soap", "ljubimci": "pets", "pas": "dog", "macka": "cat",
+    }
+    
+    msg_lower = message.lower()
+    for cro, eng in translations.items():
+        msg_lower = msg_lower.replace(cro, eng)
+
+    keywords = [w for w in msg_lower.split() if len(w) > 2]
+    if not keywords:
+        return active[:50], upcoming[:20]
+
+    def matches(p):
+        name = (p.get("product") or "").lower()
+        brand = (p.get("brand") or "").lower()
+        cat = (p.get("category") or "").lower()
+        subcat = (p.get("subcategory") or "").lower()
+        store = (p.get("store") or "").lower()
+        for kw in keywords:
+            if kw in name or kw in brand or kw in cat or kw in subcat or kw in store:
+                return True
+        return False
+
+    filtered_active = [p for p in active if matches(p)]
+    filtered_upcoming = [p for p in upcoming if matches(p)]
+    
+    if not filtered_active and not filtered_upcoming:
+        return active[:50], upcoming[:20]
+    
+    return filtered_active[:50], filtered_upcoming[:20]
+
+def format_products(active, upcoming, fine_prints):
+    result = ""
+    if active:
+        result += "=== ACTIVE DEALS ===\n"
+        for p in active:
+            result += f"{p.get('store', '')} | {p.get('product', '')}"
+            if p.get('brand'): result += f" ({p.get('brand')})"
+            if p.get('quantity'): result += f" {p.get('quantity')}"
+            result += f" | {p.get('sale_price', '')}€"
+            if p.get('original_price'): result += f" (was {p.get('original_price')}€)"
+            result += f" | until: {p.get('valid_until', '')}"
+            if p.get('page_number'): result += f" | page: {p.get('page_number')}"
+            result += "\n"
+    
+    if upcoming:
+        result += "\n=== UPCOMING DEALS ===\n"
+        for p in upcoming:
+            result += f"{p.get('store', '')} | {p.get('product', '')}"
+            result += f" | {p.get('sale_price', '')}€"
+            result += f" | from: {p.get('valid_from', '')} to {p.get('valid_until', '')}"
+            if p.get('page_number'): result += f" | page: {p.get('page_number')}"
+            result += "\n"
+    
+    if fine_prints:
+        result += "\n=== STORE NOTES ===\n"
+        for s, fp in fine_prints.items():
+            result += f"{s}: {fp}\n"
+    
+    return result or "No matching products found."
+
+def get_page_image_url(store, page_num, all_products):
+    """Get image URL for a specific store and page number"""
+    logger.info(f"Looking for image: store={store}, page={page_num}")
+    
+    store_lower = store.lower() if store else ""
+    
+    # Strategy 1: Exact match with store and page
+    for p in all_products:
+        p_store = (p.get("store") or "").lower()
+        p_page = p.get("page_number")
+        p_url = p.get("page_image_url")
+        
+        if p_url and p_page == page_num:
+            if not store or p_store == store_lower:
+                logger.info(f"Found exact match: {p_url}")
+                return p_url
+    
+    # Strategy 2: Any product with that page number
+    for p in all_products:
+        if p.get("page_number") == page_num and p.get("page_image_url"):
+            logger.info(f"Found page match (different store): {p.get('page_image_url')}")
+            return p.get("page_image_url")
+    
+    # Strategy 3: Try to construct URL from pattern
+    sample = next((p for p in all_products if p.get("page_image_url")), None)
+    if sample and sample.get("page_image_url"):
+        url = sample.get("page_image_url")
+        # Try different page number patterns
+        patterns = [
+            (r'_page_(\d+)\.jpg', f'_page_{str(page_num).zfill(3)}.jpg'),
+            (r'_(\d+)\.jpg', f'_{str(page_num)}.jpg'),
+            (r'page-(\d+)\.jpg', f'page-{page_num}.jpg')
+        ]
+        
+        for pattern, replacement in patterns:
+            match = re.search(pattern, url)
+            if match:
+                new_url = url.replace(match.group(0), replacement)
+                logger.info(f"Constructed URL from pattern: {new_url}")
+                return new_url
+    
+    logger.warning(f"No image found for page {page_num}")
+    return None
+
+def get_adjacent_page(current_url, direction, all_products):
+    """Get next/previous page image URL"""
+    if not current_url:
+        return None
+    
+    try:
+        # Try different page number patterns
+        patterns = [
+            (r'_page_(\d+)\.jpg', '_page_'),
+            (r'_(\d+)\.jpg', '_'),
+            (r'page-(\d+)\.jpg', 'page-')
+        ]
+        
+        for pattern, prefix in patterns:
+            match = re.search(pattern, current_url)
+            if match:
+                current_num = int(match.group(1))
+                new_num = current_num + direction
+                
+                if new_num < 1:
+                    return None
+                
+                # Try to find existing product with this page number
+                for p in all_products:
+                    if p.get("page_number") == new_num and p.get("page_image_url"):
+                        logger.info(f"Found adjacent page {new_num}: {p.get('page_image_url')}")
+                        return p.get("page_image_url")
+                
+                # Construct new URL
+                new_url = current_url.replace(
+                    match.group(0),
+                    f"{prefix}{str(new_num).zfill(3)}.jpg"
+                )
+                logger.info(f"Constructed adjacent URL: {new_url}")
+                return new_url
+        
+        return None
+    except Exception as e:
+        logger.error(f"get_adjacent_page error: {e}")
+        return None
+
+def extract_page_numbers(text):
+    numbers = re.findall(r'\b(\d{1,3})\b', text)
+    return [int(n) for n in numbers if 1 <= int(n) <= 200]
+
+def build_conversation_context(conversation):
+    if not conversation:
+        return ""
+    ctx = "CONVERSATION HISTORY (last messages):\n"
+    for msg in conversation[-10:]:
+        ctx += f"{msg.get('role', '')} [{msg.get('time', '')}]: {msg.get('content', '')}\n"
+    return ctx
+
+def ask_gemini(message, products, user, conversation):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    today = date.today().strftime("%d.%m.%Y.")
+    
+    user_ctx = ""
+    if user.get("user_summary"):
+        user_ctx = f"User profile: {user.get('user_summary')}\n"
+    
+    conv_ctx = build_conversation_context(conversation)
+    
+    prompt = (
+        f"You are katalog.ai - a smart friendly shopping assistant. Today is {today}. "
+        f"{user_ctx}{conv_ctx}"
+        f"\nPRODUCT DATABASE (English, with page numbers):\n{products}\n\n"
+        "INSTRUCTIONS:\n"
+        "- Max 4096 characters total. Be concise.\n"
+        "- Respond in the same language the user writes in. Translate product names naturally.\n"
+        "- When listing products always mention which PAGE they are on.\n"
+        "- After listing products always end with page numbers like: Pages: 1, 3, 7 — reply with a number to see that page 📖\n"
+        "- You can split into 2 messages using [MSG2] tag when it improves readability.\n"
+        "- On first greeting introduce yourself and tell user: type a page number to see it, + next page, - previous page.\n"
+        "- Use conversation history to remember context - never ask what was already answered.\n"
+        "- Be warm and natural. No markdown, no asterisks. Emojis welcome.\n"
+        "- Use all data you can get to give the users. You are like google for katalogs.\n"
+        f"\nUser message: {message}"
+    )
+    
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    try:
+        r = requests.post(url, json=body, timeout=30)
+        response_text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return response_text
+    except Exception as e:
+        logger.error(f"ask_gemini error: {e}")
+        return "Sorry, could not process your request right now."
+
+def create_media_message(resp, text, image_url):
+    """Helper to create media messages with proper formatting"""
+    # Validate image first
+    valid, message = validate_image_for_whatsapp(image_url)
+    if not valid:
+        logger.error(f"Image validation failed: {message}")
+        resp.message(f"⚠️ Image not available: {message}")
+        return resp
+    
+    # Encode URL properly
+    encoded_url = encode_url(image_url)
+    logger.info(f"Sending media with URL: {encoded_url}")
+    
+    # Create message with media
+    msg = resp.message(text)
+    msg.media(encoded_url)
+    return resp
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    phone = request.form.get("From", "")
+    message = request.form.get("Body", "").strip()
+    
+    # Log incoming request
+    logger.info(f"📱 Webhook received - Phone: {phone}, Message: '{message}'")
+    
+    user = get_or_create_user(phone)
+    active, upcoming, fine_prints = get_products()
+    all_products = active + upcoming
+    conversation = get_conversation(user)
+    resp = MessagingResponse()
+
+    # Handle page navigation with +/-
+    if message in ["+", ">", "➕", "➡️"]:
+        logger.info("➡️ Page forward requested")
+        adj = get_adjacent_page(user.get("last_page_url"), 1, all_products)
+        if adj:
+            logger.info(f"Found next page: {adj}")
+            create_media_message(resp, "➡️  ( + / - )", adj)
+            update_user(phone, {"last_page_url": adj})
+        else:
+            logger.info("No next page found")
+            resp.message("⛔ Nema sljedeće stranice.")
+        return str(resp)
+
+    if message in ["-", "<", "➖", "⬅️"]:
+        logger.info("⬅️ Page backward requested")
+        adj = get_adjacent_page(user.get("last_page_url"), -1, all_products)
+        if adj:
+            logger.info(f"Found previous page: {adj}")
+            create_media_message(resp, "⬅️  ( + / - )", adj)
+            update_user(phone, {"last_page_url": adj})
+        else:
+            logger.info("No previous page found")
+            resp.message("⛔ Nema prethodne stranice.")
+        return str(resp)
+
+    # Check for page number requests
+    waiting = user.get("waiting_for_page") or False
+    available = user.get("available_pages") or []
+    if isinstance(available, str):
+        try:
+            available = json.loads(available)
+        except:
+            available = []
+
+    nums = extract_page_numbers(message)
+    is_only_numbers = bool(nums) and not re.search(r'[a-zA-ZčćšđžČĆŠĐŽ]{3,}', message)
+    page_request_nums = []
+
+    if waiting and nums:
+        page_request_nums = [n for n in nums if n in available] or nums[:3]
+    elif is_only_numbers:
+        page_request_nums = nums[:3]
+    else:
+        explicit = re.findall(r'(?:stranica|str\.|strana|page|pg\.?|pagina|seite|sida)\s*(\d+)', message.lower())
+        if explicit:
+            page_request_nums = [int(n) for n in explicit[:3]]
+
+    if page_request_nums:
+        store = user.get("last_catalogue_store") or ""
+        logger.info(f"📄 Page number request: {page_request_nums}, store: {store}")
+        sent_any = False
+        
+        for pg in page_request_nums[:2]:  # Max 2 pages per request
+            img_url = get_page_image_url(store, pg, all_products)
+            if img_url:
+                logger.info(f"Found image for page {pg}: {img_url}")
+                create_media_message(resp, f"📖 Str. {pg}  ( + / - )", img_url)
+                update_user(phone, {"last_page_url": img_url, "waiting_for_page": False})
+                sent_any = True
+            else:
+                logger.warning(f"No image URL found for page {pg}")
+        
+        if not sent_any:
+            resp.message("Nemam sliku za tu stranicu. Pokušaj drugi broj.")
+        
+        return str(resp)
+
+    # Handle text queries
+    filtered_active, filtered_upcoming = filter_products(message, active, upcoming)
+    page_nums = sorted(set([p.get("page_number") for p in filtered_active + filtered_upcoming if p.get("page_number")]))
+    stores = list(set([p.get("store") for p in filtered_active + filtered_upcoming if p.get("store")]))
+    main_store = stores[0] if len(stores) == 1 else ""
+    
+    products_ctx = format_products(filtered_active, filtered_upcoming, fine_prints)
+    reply = ask_gemini(message, products_ctx, user, conversation)
+    
+    save_conversation(phone, conversation, message, reply)
+
+    if page_nums:
+        update_user(phone, {
+            "waiting_for_page": True,
+            "available_pages": page_nums,
+            "last_catalogue_store": main_store
+        })
+    else:
+        update_user(phone, {"waiting_for_page": False})
+
+    # Split message if needed
+    parts = reply.split("[MSG2]")
+    msg1 = parts[0].strip()
+    msg2 = parts[1].strip() if len(parts) > 1 else ""
+    
+    resp.message(msg1)
+    if msg2:
+        resp.message(msg2)
+    
+    logger.info(f"Response sent: {msg1[:100]}...")
+    return str(resp)
+
+# ─────────────────────────────────────────
+# DEBUG ENDPOINTS
+# ─────────────────────────────────────────
+
+@app.route("/debug/products/<phone>")
+def debug_products(phone):
+    """Debug endpoint to check what products/images are stored for a user"""
+    user = get_or_create_user(phone)
+    active, upcoming, fine_prints = get_products()
+    all_products = active + upcoming
+    
+    # Get products with images
+    products_with_images = [p for p in all_products if p.get("page_image_url")]
+    
+    # Group by store and page
+    by_store = {}
+    for p in products_with_images:
+        store = p.get("store", "Unknown")
+        if store not in by_store:
+            by_store[store] = []
+        by_store[store].append({
+            "page": p.get("page_number"),
+            "product": p.get("product"),
+            "image_url": p.get("page_image_url")
+        })
+    
+    # Test a sample image
+    sample_test = None
+    if products_with_images:
+        sample_url = products_with_images[0].get("page_image_url")
+        valid, message = validate_image_for_whatsapp(sample_url)
+        sample_test = {
+            "url": sample_url,
+            "valid": valid,
+            "message": message
+        }
+    
+    return jsonify({
+        "total_products": len(all_products),
+        "products_with_images": len(products_with_images),
+        "by_store": by_store,
+        "user": {
+            "last_page_url": user.get("last_page_url"),
+            "waiting_for_page": user.get("waiting_for_page"),
+            "available_pages": user.get("available_pages"),
+            "last_catalogue_store": user.get("last_catalogue_store")
+        },
+        "sample_image_test": sample_test,
+        "fine_prints": fine_prints
+    })
+
+@app.route("/test/image-url")
+def test_image_url():
+    """Test if an image URL is accessible and properly formatted for Twilio"""
+    url = request.args.get("url")
+    if not url:
+        return "Please provide a url parameter", 400
+    
+    results = {
+        "url": url,
+        "encoded_url": encode_url(url),
+        "tests": {}
+    }
+    
+    # Test 1: Is URL accessible?
+    try:
+        r = requests.head(url, timeout=10, allow_redirects=True)
+        results["tests"]["http_head"] = {
+            "status": r.status_code,
+            "success": r.status_code == 200,
+            "content_type": r.headers.get("content-type"),
+            "content_length": r.headers.get("content-length")
+        }
+    except Exception as e:
+        results["tests"]["http_head"] = {"error": str(e)}
+    
+    # Test 2: WhatsApp validation
+    valid, message = validate_image_for_whatsapp(url)
+    results["tests"]["whatsapp_validation"] = {
+        "valid": valid,
+        "message": message
+    }
+    
     return jsonify(results)
 
+@app.route("/test-webhook", methods=["POST"])
+def test_webhook():
+    """Test endpoint to simulate sending images"""
+    phone = request.form.get("From", "test-user")
+    message = request.form.get("Body", "").strip()
+    
+    resp = MessagingResponse()
+    
+    # Get any product with an image
+    active, upcoming, _ = get_products()
+    all_products = active + upcoming
+    
+    sample_product = next((p for p in all_products if p.get("page_image_url")), None)
+    
+    if sample_product:
+        test_url = sample_product["page_image_url"]
+        logger.info(f"Test webhook - sending image: {test_url}")
+        
+        valid, msg = validate_image_for_whatsapp(test_url)
+        if valid:
+            create_media_message(resp, "Test image from database:", test_url)
+        else:
+            resp.message(f"Sample image invalid: {msg}")
+    else:
+        resp.message("No images found in database. Upload a catalog first.")
+    
+    return str(resp)
 
-@app.route("/debug/storage")
-def debug_storage():
-    """Test storage bucket — uploads a tiny test image and checks the result."""
-    results = {}
-    try:
-        # 1. List bucket contents
-        list_url = f"{Config.SUPABASE_URL}/storage/v1/object/list/{Config.STORAGE_BUCKET}"
-        r = requests.post(list_url,
-            headers={
-                "apikey": Config.SUPABASE_KEY,
-                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"limit": 5, "offset": 0, "prefix": ""},
-            timeout=10, verify=False
-        )
-        results["list_status"] = r.status_code
-        results["list_response"] = r.text[:300]
-
-        # 2. Try uploading a 1x1 white JPEG
-        tiny_jpg = (
-            b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-            b'\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t'
-            b'\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a'
-            b'\x1f\x1e\x1d\x1a\x1c\x1c $.\' ",#\x1c\x1c(7),01444\x1f\'9=82<.342\x1e\x1f'
-            b'-;\x1f\x1c\x1f+\x1f(=\x18\x16\x1f!\x1f#\x1f'
-            b'\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00'
-            b'\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b'
-            b'\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A'
-            b'\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfb\xff\xd9'
-        )
-        put_url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.STORAGE_BUCKET}/debug_test.jpg"
-        r2 = requests.put(put_url,
-            headers={
-                "apikey": Config.SUPABASE_KEY,
-                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-                "Content-Type": "image/jpeg",
-                "x-upsert": "true",
-            },
-            data=tiny_jpg, timeout=10, verify=False
-        )
-        results["upload_status"]   = r2.status_code
-        results["upload_response"] = r2.text[:300]
-        results["bucket"]          = Config.STORAGE_BUCKET
-        results["supabase_url"]    = Config.SUPABASE_URL
-
-    except Exception as e:
-        results["error"] = str(e)
-
-    return jsonify(results)
-
-
-@app.route("/p/<product_id>")
-def product_page(product_id):
-    try:
-        data = _sb_get(f"/rest/v1/products?id=eq.{product_id}")
-        if data:
-            return jsonify(data[0])
-    except Exception as e:
-        logger.error(f"product_page failed: {e}")
-    return jsonify({"error": "Product not found"}), 404
-
-
-# ----------------------------------------------------------------------------
-# MAIN
-# On Render, use gunicorn — this block is never reached in production:
-#   gunicorn katalog:app --bind 0.0.0.0:$PORT --workers 1 --threads 4
-# ----------------------------------------------------------------------------
+@app.route("/", methods=["GET"])
+def home():
+    return "katalog.ai is running! Use /upload-tool to upload catalogs or /webhook for WhatsApp."
 
 if __name__ == "__main__":
-    port   = int(os.environ.get("PORT", 5000))
-    is_dev = os.environ.get("FLASK_ENV") == "development"
-    logger.info(f"Starting katalog.ai on port {port} (dev={is_dev})")
-    app.run(host="0.0.0.0", port=port, debug=is_dev, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
