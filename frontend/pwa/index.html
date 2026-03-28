@@ -12,10 +12,9 @@
     <script src="/config.js"></script>
     <script src="/translations.js"></script>
 </head>
-<script src="/scanner.js"></script>
 <body>
     <div id="app" class="app">
-        <!-- Header with store selector -->
+        <!-- Header -->
         <header class="header">
             <h1>{{app_name}}</h1>
             <div class="store-selector" id="storeSelector"></div>
@@ -54,18 +53,18 @@
                 <span class="icon">🏠</span>
                 <span>{{nav_home}}</span>
             </button>
-            <button class="nav-item" data-page="favorites">
-                <span class="icon">❤️</span>
-                <span>{{nav_favorites}}</span>
-                <span class="badge" id="favoritesBadge"></span>
+            <button class="nav-item" data-page="moj-popis">
+                <span class="icon">🛒</span>
+                <span>Moj Popis</span>
+                <span class="badge" id="popisBadge"></span>
             </button>
             <button class="nav-item" data-page="chat">
                 <span class="icon">💬</span>
                 <span>{{nav_chat}}</span>
-                <span class="badge" id="chatBadge"></span>
+                <span class="badge" id="chatNavBadge"></span>
             </button>
             <button class="nav-item" data-page="catalogues">
-                <span class="icon">🛒</span>
+                <span class="icon">📖</span>
                 <span>{{nav_catalogues}}</span>
             </button>
             <button class="nav-item" data-page="more">
@@ -87,5 +86,7 @@
     </div>
     
     <script src="/app.js"></script>
+    <script src="/moj_popis.js"></script>
+    <script src="/scanner.js"></script>
 </body>
 </html>

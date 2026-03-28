@@ -1382,7 +1382,247 @@ def lookup_barcode_mcp(barcode, country="croatia"):
     except Exception as e:
         logger.error(f"lookup_barcode_mcp error: {e}")
         return None
+
+# ─────────────────────────────────────────
+# BASKET OPTIMIZER — add this to app.py
+# Paste just above: if __name__ == "__main__":
+# ─────────────────────────────────────────
+
+@app.route("/api/basket", methods=["POST"])
+def basket_optimizer():
+    """
+    Given a list of product names + quantities, find the cheapest
+    combination of stores to buy everything.
+
+    Returns combinations sorted by total price:
+    - 1-store result (cheapest single store for whole basket)
+    - 2-store result (cheapest split across 2 stores)
+    - 3-store result (cheapest split across 3 stores)
+    - Absolute cheapest (best price per item regardless of store count)
+    """
+    data    = request.json or {}
+    items   = data.get("items", [])   # [{"name": "mlijeko", "qty": 2}, ...]
+    country = data.get("country", "croatia")
+
+    if not items:
+        return jsonify({"error": "No items provided"}), 400
+
+    today  = date.today().strftime("%Y-%m-%d")
+    future = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    # ── Step 1: Search Supabase for each item ─────────────────────────────
+    item_results = []   # [{name, qty, matches: [{store, price, product, ...}]}]
+    not_found    = []
+
+    for item in items[:20]:  # max 20 items
+        name = item.get("name", "").strip()
+        qty  = int(item.get("qty", 1))
+        if not name:
+            continue
+
+        matches = search_item_prices(name, today, future)
+
+        if matches:
+            item_results.append({
+                "name":    name,
+                "qty":     qty,
+                "matches": matches
+            })
+        else:
+            not_found.append(name)
+            logger.warning(f"Basket: no matches for '{name}'")
+
+    if not item_results:
+        return jsonify({
+            "combinations": [],
+            "not_found":    not_found,
+            "item_results": []
+        })
+
+    # ── Step 2: Get all stores that have at least some items ──────────────
+    all_stores = set()
+    for item in item_results:
+        for m in item["matches"]:
+            all_stores.add(m["store"])
+    all_stores = sorted(all_stores)
+
+    # ── Step 3: Build store price matrix ─────────────────────────────────
+    # store_matrix[store][item_name] = cheapest price for that item at that store
+    store_matrix = {}
+    for store in all_stores:
+        store_matrix[store] = {}
+        for item in item_results:
+            store_matches = [m for m in item["matches"] if m["store"] == store]
+            if store_matches:
+                # Pick cheapest match at this store
+                best = min(store_matches, key=lambda m: float(m.get("sale_price") or 999))
+                store_matrix[store][item["name"]] = {
+                    "price":   float(best.get("sale_price") or 0),
+                    "product": best.get("product", item["name"]),
+                    "matched": True
+                }
+
+    # ── Step 4: Calculate basket total for a set of stores ───────────────
+    def calc_basket(store_set):
+        """
+        For a given set of stores, assign each item to the cheapest store
+        in that set. Return total + per-store breakdown.
+        """
+        total        = 0.0
+        store_items  = {s: [] for s in store_set}
+        item_coverage = 0
+
+        for item in item_results:
+            best_price = None
+            best_store = None
+
+            for store in store_set:
+                price_info = store_matrix.get(store, {}).get(item["name"])
+                if price_info and (best_price is None or price_info["price"] < best_price):
+                    best_price = price_info["price"]
+                    best_store = store
+
+            if best_store is not None:
+                line_total = best_price * item["qty"]
+                total     += line_total
+                store_items[best_store].append({
+                    "name":    item["name"],
+                    "qty":     item["qty"],
+                    "price":   best_price,
+                    "matched": True
+                })
+                item_coverage += 1
+            else:
+                # Item not available in any store in this set — add to cheapest store
+                if store_set:
+                    fallback = list(store_set)[0]
+                    store_items[fallback].append({
+                        "name":    item["name"],
+                        "qty":     item["qty"],
+                        "price":   0,
+                        "matched": False
+                    })
+
+        stores_breakdown = []
+        for store in store_set:
+            s_items = store_items[store]
+            s_total = sum(i["price"] * i["qty"] for i in s_items if i["matched"])
+            if s_items:  # only include stores that have items
+                stores_breakdown.append({
+                    "store":    store,
+                    "subtotal": s_total,
+                    "items":    s_items
+                })
+
+        return {
+            "total":          total,
+            "stores":         stores_breakdown,
+            "item_coverage":  item_coverage,
+            "total_items":    len(item_results)
+        }
+
+    # ── Step 5: Find best combination for each store count ────────────────
+    from itertools import combinations as iter_combos
+
+    results = []
+    max_stores = min(len(all_stores), 4)  # up to 4 store combinations
+
+    for n in range(1, max_stores + 1):
+        best_combo   = None
+        best_total   = float('inf')
+
+        for store_combo in iter_combos(all_stores, n):
+            result = calc_basket(set(store_combo))
+            if result["total"] < best_total:
+                best_total = result["total"]
+                best_combo = result
+
+        if best_combo:
+            best_combo["store_count"] = n
+            best_combo["is_absolute_cheapest"] = False
+            results.append(best_combo)
+
+    # Mark absolute cheapest (best price per item, any number of stores)
+    absolute = calc_basket(set(all_stores))
+    absolute["store_count"] = len(all_stores)
+    absolute["is_absolute_cheapest"] = True
+
+    # Check if absolute cheapest is different from existing results
+    already_included = any(
+        abs(r["total"] - absolute["total"]) < 0.01
+        for r in results
+    )
+    if not already_included and len(all_stores) > max_stores:
+        results.append(absolute)
+
+    # Sort by total price
+    results.sort(key=lambda r: r["total"])
+
+    # Most expensive single store (for savings comparison)
+    most_expensive_single = None
+    if results:
+        single_store_results = [r for r in results if r["store_count"] == 1]
+        if single_store_results:
+            most_expensive_single = max(r["total"] for r in single_store_results)
+
+    return jsonify({
+        "combinations":          results,
+        "item_results":          [{"name": i["name"], "qty": i["qty"]} for i in item_results],
+        "not_found":             not_found,
+        "most_expensive_single": most_expensive_single,
+        "total_items":           len(item_results),
+        "stores_searched":       all_stores
+    })
+
+
+def search_item_prices(name, today, future):
+    """
+    Search Supabase products for a given item name.
+    Returns list of active deals matching the name.
+    """
+    try:
+        # Try exact keyword search using ilike
+        keywords = name.lower().split()
         
+        # Build a filter — search product name for any keyword
+        # Supabase REST doesn't support OR across fields directly,
+        # so we fetch broadly and filter in Python
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products",
+            headers=db_headers(),
+            params={
+                "product":    f"ilike.*{keywords[0]}*",
+                "valid_from": f"lte.{future}",
+                "or":         f"(valid_until.gte.{today},valid_until.is.null)",
+                "is_expired": "eq.false",
+                "order":      "sale_price",
+                "limit":      100,
+                "select":     "store,product,brand,sale_price,original_price,discount_percent,valid_until,category"
+            },
+            timeout=15
+        )
+
+        if r.status_code != 200:
+            logger.error(f"search_item_prices failed: {r.status_code}")
+            return []
+
+        products = r.json()
+
+        # Further filter: all keywords must appear in product name
+        if len(keywords) > 1:
+            products = [
+                p for p in products
+                if all(kw in p.get("product", "").lower() for kw in keywords)
+            ]
+
+        return products
+
+    except Exception as e:
+        logger.error(f"search_item_prices error for '{name}': {e}")
+        return []
+
+        
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
