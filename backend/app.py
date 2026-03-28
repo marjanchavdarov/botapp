@@ -1245,7 +1245,144 @@ def test_webhook():
 @app.route("/", methods=["GET"])
 def home():
     return "katalog.ai is running! Use /upload-tool to upload catalogs or /webhook for WhatsApp."
+# ─────────────────────────────────────────
+# BARCODE LOOKUP — add this to app.py
+# ─────────────────────────────────────────
+# Paste this entire block into app.py, just before the if __name__ == "__main__": line
 
+@app.route("/api/barcode/<barcode>")
+def barcode_lookup(barcode):
+    """
+    Look up a product by barcode.
+    1. First checks our own Supabase products table
+    2. Then calls cijene.dev MCP for live price comparison
+    """
+    country = request.args.get("country", "croatia")
+
+    results = {
+        "barcode": barcode,
+        "product_name": None,
+        "brand": None,
+        "prices": [],
+        "source": None
+    }
+
+    # ── Step 1: Check our own database first ─────────────────────────────
+    try:
+        own = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products?barcode=eq.{barcode}&limit=20",
+            headers=db_headers(),
+            timeout=10
+        )
+        if own.status_code == 200 and own.json():
+            products = own.json()
+            results["product_name"] = products[0].get("product")
+            results["brand"]        = products[0].get("brand")
+            results["source"]       = "supabase"
+
+            for p in products:
+                results["prices"].append({
+                    "store":          p.get("store"),
+                    "price":          p.get("sale_price"),
+                    "original_price": p.get("original_price"),
+                    "discount_percent": p.get("discount_percent"),
+                    "valid_until":    p.get("valid_until"),
+                })
+
+            logger.info(f"Barcode {barcode}: found {len(products)} results in Supabase")
+    except Exception as e:
+        logger.warning(f"Supabase barcode lookup failed: {e}")
+
+    # ── Step 2: Call cijene.dev MCP for live prices ───────────────────────
+    try:
+        mcp_result = lookup_barcode_mcp(barcode, country)
+        if mcp_result:
+            # If we didn't find product name in Supabase, use MCP result
+            if not results["product_name"] and mcp_result.get("product_name"):
+                results["product_name"] = mcp_result["product_name"]
+            if not results["brand"] and mcp_result.get("brand"):
+                results["brand"] = mcp_result["brand"]
+
+            # Merge MCP prices — avoid duplicate stores
+            existing_stores = {p["store"] for p in results["prices"]}
+            for p in mcp_result.get("prices", []):
+                if p.get("store") not in existing_stores:
+                    results["prices"].append(p)
+
+            if not results["source"]:
+                results["source"] = "cijene.dev"
+
+            logger.info(f"Barcode {barcode}: MCP returned {len(mcp_result.get('prices', []))} prices")
+
+    except Exception as e:
+        logger.warning(f"MCP barcode lookup failed: {e}")
+
+    # Sort prices cheapest first
+    results["prices"].sort(key=lambda x: float(x.get("price") or 999))
+
+    return jsonify(results)
+
+
+def lookup_barcode_mcp(barcode, country="croatia"):
+    """
+    Call the cijene.dev MCP server to look up a barcode.
+    Adjust the MCP endpoint URL to match your actual cijene.dev MCP setup.
+    """
+    try:
+        # ── Option A: cijene.dev has a direct barcode search API ─────────
+        # Adjust this URL to your actual cijene.dev MCP endpoint
+        mcp_url = os.environ.get("CIJENE_MCP_URL", "https://cijene.dev/api")
+
+        response = requests.get(
+            f"{mcp_url}/barcode/{barcode}",
+            params={"country": country},
+            headers={
+                "Authorization": f"Bearer {os.environ.get('CIJENE_API_KEY', '')}",
+                "Accept": "application/json"
+            },
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            logger.warning(f"cijene.dev MCP returned {response.status_code} for barcode {barcode}")
+            return None
+
+        data = response.json()
+
+        # ── Normalize cijene.dev response to our format ───────────────────
+        # Adjust field names below to match actual cijene.dev API response
+        normalized = {
+            "product_name": data.get("name") or data.get("product_name") or data.get("naziv"),
+            "brand":        data.get("brand") or data.get("marka"),
+            "prices": []
+        }
+
+        # cijene.dev typically returns a list of store prices
+        price_list = (
+            data.get("prices") or
+            data.get("store_prices") or
+            data.get("cijene") or
+            []
+        )
+
+        for item in price_list:
+            normalized["prices"].append({
+                "store":            item.get("store") or item.get("trgovina") or item.get("name"),
+                "price":            item.get("price") or item.get("cijena"),
+                "original_price":   item.get("original_price") or item.get("redovna_cijena"),
+                "discount_percent": item.get("discount") or item.get("popust"),
+                "valid_until":      item.get("valid_until") or item.get("vrijedi_do"),
+            })
+
+        return normalized
+
+    except requests.exceptions.Timeout:
+        logger.warning(f"cijene.dev MCP timeout for barcode {barcode}")
+        return None
+    except Exception as e:
+        logger.error(f"lookup_barcode_mcp error: {e}")
+        return None
+        
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
