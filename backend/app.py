@@ -3,6 +3,8 @@ from twilio.twiml.messaging_response import MessagingResponse
 import requests
 import os
 import json
+from dotenv import load_dotenv
+load_dotenv()
 import base64
 import threading
 import uuid
