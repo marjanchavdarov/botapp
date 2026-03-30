@@ -1251,8 +1251,15 @@ def home():
 # BARCODE LOOKUP — add this to app.py
 # ─────────────────────────────────────────
 # Paste this entire block into app.py, just before the if __name__ == "__main__": line
+@app.route('/manifest.json')
+def manifest():
+    return send_from_directory('static', 'Manifest.json')
 
+@app.route('/sw.js')
+def service_worker():
+    return send_from_directory('static', 'sw.js', mimetype='application/javascript')
 @app.route("/api/barcode/<barcode>")
+
 def barcode_lookup(barcode):
     """
     Look up a product by barcode.
