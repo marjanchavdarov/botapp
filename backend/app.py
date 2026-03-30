@@ -1246,7 +1246,7 @@ def test_webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "katalog.ai is running! Use /upload-tool to upload catalogs or /webhook for WhatsApp."
+    return send_from_directory('static', 'index.html')
 # ─────────────────────────────────────────
 # BARCODE LOOKUP — add this to app.py
 # ─────────────────────────────────────────
