@@ -4,7 +4,7 @@
   "description": "Sve akcije na jednom mjestu",
   "start_url": "/",
   "display": "standalone",
-  "orientation": "portrait"
+  "orientation": "portrait",
   "background_color": "#1A1A1A",
   "theme_color": "#E8572A",
   "icons": [
