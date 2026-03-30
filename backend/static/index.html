@@ -331,7 +331,19 @@
 
     <!-- MY LIST VIEW -->
     <div id="list-view" class="view" style="padding-top:0">
+      <div id="list-view" class="view" style="padding-top:0">
       <div class="mylist-count-bar">
+        <span class="mylist-count-text" id="list-count-text">0 proizvoda spremljeno</span>
+        <button class="mylist-clear" onclick="clearAll()">Očisti sve</button>
+      </div>
+      <div style="padding:12px 16px 0">
+        <button id="optimize-btn" onclick="optimizeBasket()" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;display:none">
+          🛒 Optimiziraj košaricu
+        </button>
+        <div id="basket-result" style="margin-top:12px"></div>
+      </div>
+      <div class="product-list" id="saved-list" style="padding:12px 0 0"></div>
+    </div>
         <span class="mylist-count-text" id="list-count-text">0 proizvoda spremljeno</span>
         <button class="mylist-clear" onclick="clearAll()">Očisti sve</button>
       </div>
@@ -937,7 +949,7 @@ function updateBadge() {
 
 function renderSaved() {
   const list = document.getElementById('saved-list');
-  document.getElementById('list-count-text').textContent = `${savedItems.length} PROIZVODA SPREMLJENO`;
+  document.getElementById('list-count-text').textContent = `${savedItems.length} PROIZVODA SPREMLJENO`; document.getElementById('optimize-btn').style.display = savedItems.length ? 'block' : 'none';
   if (!savedItems.length) {
     list.innerHTML = `<div class="empty"><div class="empty-icon">🤍</div><div class="empty-title">Popis je prazan</div><div class="empty-text">Dodajte proizvode pritiskom na srce</div></div>`;
     return;
@@ -1633,6 +1645,49 @@ function closeCardFullscreen() {
 const _origShowView = showView;
 document.addEventListener('DOMContentLoaded', () => { renderCards(); });
 
+
+async function optimizeBasket() {
+  if (!savedItems.length) return;
+  const btn = document.getElementById("optimize-btn");
+  const result = document.getElementById("basket-result");
+  btn.textContent = "⏳ Tražim najbolje cijene...";
+  btn.disabled = true;
+  try {
+    const items = savedItems.map(p => ({ name: p.product, qty: 1 }));
+    const r = await fetch("/api/basket", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
+    const data = await r.json();
+    if (!data.combinations || !data.combinations.length) {
+      result.innerHTML = "<div style='text-align:center;padding:20px;color:var(--muted)'>Nema rezultata u bazi za ove proizvode.</div>";
+    } else {
+      let html = "";
+      data.combinations.forEach((combo, i) => {
+        const label = combo.store_count === 1 ? "1 trgovina" : combo.store_count + " trgovine";
+        html += "<div style='background:var(--card);border-radius:12px;border:1px solid var(--border);margin-bottom:12px;overflow:hidden'>";
+        html += "<div style='background:" + (i===0?"var(--accent)":"var(--bg)") + ";padding:12px 16px;display:flex;justify-content:space-between;align-items:center'>";
+        html += "<span style='font-weight:700;color:" + (i===0?"#fff":"var(--ink)") + "'>" + label + "</span>";
+        html += "<span style='font-size:18px;font-weight:800;color:" + (i===0?"#fff":"var(--accent)") + "'>€" + combo.total.toFixed(2) + "</span>";
+        html += "</div>";
+        combo.stores.forEach(store => {
+          html += "<div style='padding:10px 16px;border-top:1px solid var(--border)'>";
+          html += "<div style='font-weight:700;color:var(--ink);margin-bottom:6px'>📍 " + store.store + " — €" + store.subtotal.toFixed(2) + "</div>";
+          store.items.forEach(it => {
+            html += "<div style='font-size:13px;color:var(--ink2);padding:2px 0'>" + it.name + " × " + it.qty + " — " + (it.matched ? "€"+it.price.toFixed(2) : "nije pronađeno") + "</div>";
+          });
+          html += "</div>";
+        });
+        html += "</div>";
+      });
+      if (data.not_found && data.not_found.length) {
+        html += "<div style='font-size:13px;color:var(--muted);padding:8px 4px'>Nije pronađeno: " + data.not_found.join(", ") + "</div>";
+      }
+      result.innerHTML = html;
+    }
+  } catch(e) {
+    result.innerHTML = "<div style='color:red;padding:12px'>Greška: " + e.message + "</div>";
+  }
+  btn.textContent = "🛒 Optimiziraj košaricu";
+  btn.disabled = false;
+}
 </script>
 <!-- KATALOZI FULLSCREEN PAGE VIEWER -->
 <div id="kat-fullscreen" style="display:none;position:fixed;inset:0;z-index:200;background:#000;flex-direction:column;align-items:center;justify-content:center">
