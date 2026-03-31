@@ -1250,7 +1250,99 @@ def home():
 # ─────────────────────────────────────────
 # BARCODE LOOKUP — add this to app.py
 # ─────────────────────────────────────────
-# Paste this entire block into app.py, just before the if __name__ == "__main__": line
+# Paste this entire block into app.py, just before the 
+# ─────────────────────────────────────────
+# FRONTEND API ROUTES
+# ─────────────────────────────────────────
+
+@app.route("/api/country")
+def api_country():
+    return jsonify({"country": "hr"})
+
+@app.route("/api/track", methods=["POST"])
+def api_track():
+    return jsonify({"ok": True})
+
+@app.route("/api/products")
+def api_products():
+    limit = request.args.get("limit", 30, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    store = request.args.get("store", "")
+    category = request.args.get("category", "")
+    search = request.args.get("search", "")
+    date_filter = request.args.get("date", "")
+
+    from datetime import date as dt
+    today = dt.today().strftime("%Y-%m-%d")
+
+    params = {
+        "is_expired": "eq.false",
+        "limit": limit,
+        "offset": offset,
+        "order": "created_at.desc",
+        "select": "*",
+    }
+
+    if store:
+        params["store"] = f"eq.{store}"
+    if category:
+        params["category"] = f"eq.{category}"
+    if search:
+        params["product"] = f"ilike.*{search}*"
+    if date_filter:
+        params["valid_from"] = f"lte.{date_filter}"
+        params["valid_until"] = f"gte.{date_filter}"
+    else:
+        params["valid_until"] = f"gte.{today}"
+
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products",
+            headers=db_headers(),
+            params=params,
+            timeout=15
+        )
+        if r.status_code == 200:
+            return jsonify(r.json())
+        else:
+            logger.error(f"api_products error: {r.status_code} {r.text[:200]}")
+            return jsonify([])
+    except Exception as e:
+        logger.error(f"api_products exception: {e}")
+        return jsonify([])
+
+@app.route("/api/katalozi")
+def api_katalozi():
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/catalogues",
+            headers=db_headers(),
+            params={"order": "valid_from.desc", "limit": 50},
+            timeout=15
+        )
+        if r.status_code == 200:
+            return jsonify(r.json())
+        return jsonify([])
+    except Exception as e:
+        logger.error(f"api_katalozi exception: {e}")
+        return jsonify([])
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    data = request.json or {}
+    message = data.get("message", "")
+    if not message:
+        return jsonify({"reply": "Unesite poruku."})
+    active, upcoming, fine_prints = get_products()
+    filtered_active, filtered_upcoming = filter_products(message, active, upcoming)
+    products_ctx = format_products(filtered_active, filtered_upcoming, fine_prints)
+    from datetime import date as dt
+    user = {"phone": "web", "total_searches": 0}
+    reply = ask_gemini(message, products_ctx, user, [])
+    parts = reply.split("[MSG2]")
+    return jsonify({"reply": parts[0].strip(), "reply2": parts[1].strip() if len(parts) > 1 else ""})
+
+if __name__ == "__main__": line
 @app.route('/manifest.json')
 def manifest():
     return send_from_directory('static', 'Manifest.json')
@@ -1394,7 +1486,99 @@ def lookup_barcode_mcp(barcode, country="croatia"):
 
 # ─────────────────────────────────────────
 # BASKET OPTIMIZER — add this to app.py
-# Paste just above: if __name__ == "__main__":
+# Paste just above: 
+# ─────────────────────────────────────────
+# FRONTEND API ROUTES
+# ─────────────────────────────────────────
+
+@app.route("/api/country")
+def api_country():
+    return jsonify({"country": "hr"})
+
+@app.route("/api/track", methods=["POST"])
+def api_track():
+    return jsonify({"ok": True})
+
+@app.route("/api/products")
+def api_products():
+    limit = request.args.get("limit", 30, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    store = request.args.get("store", "")
+    category = request.args.get("category", "")
+    search = request.args.get("search", "")
+    date_filter = request.args.get("date", "")
+
+    from datetime import date as dt
+    today = dt.today().strftime("%Y-%m-%d")
+
+    params = {
+        "is_expired": "eq.false",
+        "limit": limit,
+        "offset": offset,
+        "order": "created_at.desc",
+        "select": "*",
+    }
+
+    if store:
+        params["store"] = f"eq.{store}"
+    if category:
+        params["category"] = f"eq.{category}"
+    if search:
+        params["product"] = f"ilike.*{search}*"
+    if date_filter:
+        params["valid_from"] = f"lte.{date_filter}"
+        params["valid_until"] = f"gte.{date_filter}"
+    else:
+        params["valid_until"] = f"gte.{today}"
+
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products",
+            headers=db_headers(),
+            params=params,
+            timeout=15
+        )
+        if r.status_code == 200:
+            return jsonify(r.json())
+        else:
+            logger.error(f"api_products error: {r.status_code} {r.text[:200]}")
+            return jsonify([])
+    except Exception as e:
+        logger.error(f"api_products exception: {e}")
+        return jsonify([])
+
+@app.route("/api/katalozi")
+def api_katalozi():
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/catalogues",
+            headers=db_headers(),
+            params={"order": "valid_from.desc", "limit": 50},
+            timeout=15
+        )
+        if r.status_code == 200:
+            return jsonify(r.json())
+        return jsonify([])
+    except Exception as e:
+        logger.error(f"api_katalozi exception: {e}")
+        return jsonify([])
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    data = request.json or {}
+    message = data.get("message", "")
+    if not message:
+        return jsonify({"reply": "Unesite poruku."})
+    active, upcoming, fine_prints = get_products()
+    filtered_active, filtered_upcoming = filter_products(message, active, upcoming)
+    products_ctx = format_products(filtered_active, filtered_upcoming, fine_prints)
+    from datetime import date as dt
+    user = {"phone": "web", "total_searches": 0}
+    reply = ask_gemini(message, products_ctx, user, [])
+    parts = reply.split("[MSG2]")
+    return jsonify({"reply": parts[0].strip(), "reply2": parts[1].strip() if len(parts) > 1 else ""})
+
+if __name__ == "__main__":
 # ─────────────────────────────────────────
 
 @app.route("/api/basket", methods=["POST"])
@@ -1631,6 +1815,98 @@ def search_item_prices(name, today, future):
         return []
 
         
+
+
+# ─────────────────────────────────────────
+# FRONTEND API ROUTES
+# ─────────────────────────────────────────
+
+@app.route("/api/country")
+def api_country():
+    return jsonify({"country": "hr"})
+
+@app.route("/api/track", methods=["POST"])
+def api_track():
+    return jsonify({"ok": True})
+
+@app.route("/api/products")
+def api_products():
+    limit = request.args.get("limit", 30, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    store = request.args.get("store", "")
+    category = request.args.get("category", "")
+    search = request.args.get("search", "")
+    date_filter = request.args.get("date", "")
+
+    from datetime import date as dt
+    today = dt.today().strftime("%Y-%m-%d")
+
+    params = {
+        "is_expired": "eq.false",
+        "limit": limit,
+        "offset": offset,
+        "order": "created_at.desc",
+        "select": "*",
+    }
+
+    if store:
+        params["store"] = f"eq.{store}"
+    if category:
+        params["category"] = f"eq.{category}"
+    if search:
+        params["product"] = f"ilike.*{search}*"
+    if date_filter:
+        params["valid_from"] = f"lte.{date_filter}"
+        params["valid_until"] = f"gte.{date_filter}"
+    else:
+        params["valid_until"] = f"gte.{today}"
+
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/products",
+            headers=db_headers(),
+            params=params,
+            timeout=15
+        )
+        if r.status_code == 200:
+            return jsonify(r.json())
+        else:
+            logger.error(f"api_products error: {r.status_code} {r.text[:200]}")
+            return jsonify([])
+    except Exception as e:
+        logger.error(f"api_products exception: {e}")
+        return jsonify([])
+
+@app.route("/api/katalozi")
+def api_katalozi():
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/catalogues",
+            headers=db_headers(),
+            params={"order": "valid_from.desc", "limit": 50},
+            timeout=15
+        )
+        if r.status_code == 200:
+            return jsonify(r.json())
+        return jsonify([])
+    except Exception as e:
+        logger.error(f"api_katalozi exception: {e}")
+        return jsonify([])
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    data = request.json or {}
+    message = data.get("message", "")
+    if not message:
+        return jsonify({"reply": "Unesite poruku."})
+    active, upcoming, fine_prints = get_products()
+    filtered_active, filtered_upcoming = filter_products(message, active, upcoming)
+    products_ctx = format_products(filtered_active, filtered_upcoming, fine_prints)
+    from datetime import date as dt
+    user = {"phone": "web", "total_searches": 0}
+    reply = ask_gemini(message, products_ctx, user, [])
+    parts = reply.split("[MSG2]")
+    return jsonify({"reply": parts[0].strip(), "reply2": parts[1].strip() if len(parts) > 1 else ""})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
