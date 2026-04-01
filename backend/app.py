@@ -1362,8 +1362,6 @@ def api_barcode(barcode):
             params={
                 "barcode": f"eq.{barcode}",
                 "select": "store,product,brand,quantity,sale_price,original_price,valid_until",
-                "valid_from": f"lte.{today}",
-                "valid_until": f"gte.{today}",
                 "limit": 50,
                 "order": "sale_price"
             },
