@@ -55,30 +55,35 @@ def verify_otp():
         result = r.json()
         print(f"TWILIO VERIFY RESPONSE: {result}")
         if result.get("status") == "approved":
-            # Get or create user in Supabase
-            existing = requests.get(
-                f"{SUPABASE_URL}/rest/v1/users?phone=eq.{requests.utils.quote(phone)}",
-                headers=db_headers()
-            ).json()
-
-            if existing:
-                user = existing[0]
-            else:
-                new_user = {
-                    "phone": phone,
-                    "total_searches": 0,
-                    "conversation": [],
-                    "created_at": datetime.now().isoformat(),
-                    "last_active": datetime.now().isoformat()
-                }
-                created = requests.post(
-                    f"{SUPABASE_URL}/rest/v1/users",
-                    headers=db_headers(),
-                    json=new_user
+            try:
+                existing = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/users?phone=eq.{requests.utils.quote(phone)}&limit=1",
+                    headers=db_headers()
                 ).json()
-                user = created[0] if isinstance(created, list) else new_user
 
-            return jsonify({"ok": True, "user_id": user.get("id"), "phone": phone})
+                if existing and len(existing) > 0:
+                    user_id = existing[0].get("id")
+                else:
+                    new_user = {
+                        "phone": phone,
+                        "total_searches": 0,
+                        "last_active": datetime.now().isoformat()
+                    }
+                    created = requests.post(
+                        f"{SUPABASE_URL}/rest/v1/users",
+                        headers=db_headers(),
+                        json=new_user
+                    )
+                    print(f"User creation: {created.status_code} {created.text[:200]}")
+                    if created.status_code in (200, 201):
+                        user_id = created.json()[0].get("id") if isinstance(created.json(), list) else None
+                    else:
+                        user_id = None
+            except Exception as e:
+                print(f"User creation error: {e}")
+                user_id = None
+
+            return jsonify({"ok": True, "user_id": user_id, "phone": phone})
         
         return jsonify({"error": "Invalid code"}), 400
     except Exception as e:
