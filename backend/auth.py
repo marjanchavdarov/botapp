@@ -53,6 +53,7 @@ def verify_otp():
             data={"To": phone, "Code": code}
         )
         result = r.json()
+        print(f"TWILIO VERIFY RESPONSE: {result}")
         if result.get("status") == "approved":
             # Get or create user in Supabase
             existing = requests.get(
