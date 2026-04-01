@@ -26,6 +26,7 @@ def barcode_lookup(barcode):
         },
         timeout=15
     )
+    print(f"DEBUG barcode={barcode} status={r.status_code} url={r.url} response={r.text[:200]}")
     prices = r.json() if r.status_code == 200 else []
     # Deduplicate by store
     seen = set()
