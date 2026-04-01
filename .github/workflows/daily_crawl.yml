@@ -1,0 +1,22 @@
+name: Daily Price Crawl
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Clone cijene-api
+        run: git clone https://github.com/senko/cijene-api.git
+      - name: Install deps
+        run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
+      - name: Crawl
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          for store in lidl konzum spar kaufland studenac tommy plodine eurospin dm ktc metro ntl ribola roto trgocentar brodokomerc lorenco boso vrutak zabac; do
+            python ingestion/crawl_to_supabase.py --store $store || true
+          done
