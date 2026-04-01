@@ -1353,6 +1353,8 @@ def service_worker():
 
 @app.route("/api/barcode/<barcode>")
 def api_barcode(barcode):
+    from datetime import date as dt
+    today = dt.today().strftime("%Y-%m-%d")
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/products",
@@ -1360,7 +1362,8 @@ def api_barcode(barcode):
             params={
                 "barcode": f"eq.{barcode}",
                 "select": "store,product,brand,quantity,sale_price,original_price,valid_until",
-                "is_expired": "eq.false",
+                "valid_from": f"lte.{today}",
+                "valid_until": f"gte.{today}",
                 "limit": 50,
                 "order": "sale_price"
             },
