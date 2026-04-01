@@ -24,13 +24,24 @@ def headers():
     }
 
 def upsert(records):
+    if not records:
+        return
+    import json
     for i in range(0, len(records), 500):
         batch = records[i:i+500]
-        r = requests.post(f"{SUPABASE_URL}/rest/v1/products", headers=headers(), json=batch)
-        if r.status_code not in (200,201):
-            logger.error(f"Upsert error: {r.status_code} {r.text[:200]}")
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/upsert_prices",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={"records": batch}
+        )
+        if r.status_code not in (200, 201, 204):
+            logger.warning(f"Batch {i//500+1} error: {r.status_code} {r.text[:100]}")
         else:
-            logger.info(f"Upserted {len(batch)} records")
+            logger.info(f"Batch {i//500+1} done ({len(batch)} records)")
 
 def crawl_store(name, crawler_class, date):
     logger.info(f"Crawling {name}...")
