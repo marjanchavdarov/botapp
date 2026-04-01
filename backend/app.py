@@ -1353,29 +1353,6 @@ def manifest():
 def service_worker():
     return send_from_directory("static", "sw.js", mimetype="application/javascript")
 
-@app.route("/api/barcode/<barcode>")
-def api_barcode(barcode):
-    from datetime import date as dt
-    today = dt.today().strftime("%Y-%m-%d")
-    try:
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/products",
-            headers=db_headers(),
-            params={
-                "barcode": f"eq.{barcode}",
-                "select": "store,product,brand,quantity,sale_price,original_price,valid_until",
-                "limit": 50,
-                "order": "sale_price"
-            },
-            timeout=15
-        )
-        if r.status_code == 200:
-            return jsonify({"barcode": barcode, "prices": r.json()})
-        return jsonify({"barcode": barcode, "prices": []})
-    except Exception as e:
-        logger.error(f"barcode lookup error: {e}")
-        return jsonify({"barcode": barcode, "prices": []})
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
