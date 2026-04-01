@@ -4,19 +4,47 @@ on:
     - cron: '0 7 * * *'
   workflow_dispatch:
 jobs:
-  crawl:
+  crawl-batch-1:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Clone cijene-api
-        run: git clone https://github.com/senko/cijene-api.git
-      - name: Install deps
-        run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
-      - name: Crawl
-        env:
+      - run: git clone https://github.com/senko/cijene-api.git
+      - run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
+      - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          for store in lidl konzum spar kaufland studenac tommy plodine eurospin dm ktc metro ntl ribola roto trgocentar brodokomerc lorenco boso vrutak zabac; do
+          for store in lidl konzum spar kaufland studenac; do
+            echo "=== $store ===" 
+            python ingestion/crawl_to_supabase.py --store $store || true
+          done
+
+  crawl-batch-2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: git clone https://github.com/senko/cijene-api.git
+      - run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          for store in tommy plodine eurospin dm ktc metro; do
+            echo "=== $store ===" 
+            python ingestion/crawl_to_supabase.py --store $store || true
+          done
+
+  crawl-batch-3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: git clone https://github.com/senko/cijene-api.git
+      - run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          for store in ntl ribola roto trgocentar brodokomerc lorenco boso vrutak zabac; do
+            echo "=== $store ===" 
             python ingestion/crawl_to_supabase.py --store $store || true
           done

@@ -27,8 +27,8 @@ def upsert(records):
     if not records:
         return
     import json
-    for i in range(0, len(records), 500):
-        batch = records[i:i+500]
+    for i in range(0, len(records), 2000):
+        batch = records[i:i+2000]
         r = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/upsert_prices",
             headers={
