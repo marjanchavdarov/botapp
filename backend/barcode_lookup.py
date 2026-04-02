@@ -47,6 +47,18 @@ def barcode_lookup(barcode):
 
     unique = sorted(seen.values(), key=lambda x: float(x["sale_price"] or 999))
 
+    # Track scan if user phone provided
+    phone = request.args.get("phone")
+    if phone:
+        try:
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/increment_searches",
+                headers={**headers(), "Content-Type": "application/json"},
+                json={"user_phone": phone}
+            )
+        except:
+            pass
+
     return jsonify({
         "barcode": barcode,
         "name": master["name"] if master else (unique[0]["product"] if unique else ""),
