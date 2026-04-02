@@ -8,14 +8,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: git clone https://github.com/senko/cijene-api.git
-      - run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
-      - env:
+      - name: Clone cijene-api
+        run: git clone https://github.com/senko/cijene-api.git ../cijene-api
+      - name: Install deps
+        run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv playwright && playwright install chromium
+      - name: Crawl batch 1
+        env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           for store in lidl konzum spar kaufland studenac; do
-            echo "=== $store ===" 
+            echo "=== $store ==="
             python ingestion/crawl_to_supabase.py --store $store || true
           done
 
@@ -23,14 +26,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: git clone https://github.com/senko/cijene-api.git
-      - run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
-      - env:
+      - name: Clone cijene-api
+        run: git clone https://github.com/senko/cijene-api.git ../cijene-api
+      - name: Install deps
+        run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv playwright && playwright install chromium
+      - name: Crawl batch 2
+        env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           for store in tommy plodine eurospin dm ktc metro; do
-            echo "=== $store ===" 
+            echo "=== $store ==="
             python ingestion/crawl_to_supabase.py --store $store || true
           done
 
@@ -38,13 +44,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: git clone https://github.com/senko/cijene-api.git
-      - run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv
-      - env:
+      - name: Clone cijene-api
+        run: git clone https://github.com/senko/cijene-api.git ../cijene-api
+      - name: Install deps
+        run: pip install beautifulsoup4 requests lxml httpx openpyxl pandas python-dotenv playwright && playwright install chromium
+      - name: Crawl batch 3
+        env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           for store in ntl ribola roto trgocentar brodokomerc lorenco boso vrutak zabac; do
-            echo "=== $store ===" 
+            echo "=== $store ==="
             python ingestion/crawl_to_supabase.py --store $store || true
           done

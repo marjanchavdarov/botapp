@@ -4,6 +4,7 @@ Usage: python crawl_to_supabase.py --store lidl
        python crawl_to_supabase.py --all
 """
 import sys, os, datetime, argparse, requests, logging
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../cijene-api'))
 sys.path.insert(0, os.path.expanduser('~/cijene-api'))
 from dotenv import load_dotenv
 load_dotenv(os.path.expanduser('~/botapp/backend/.env'))
