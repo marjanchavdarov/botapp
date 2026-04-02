@@ -67,6 +67,8 @@ def verify_otp():
                     new_user = {
                         "phone": phone,
                         "total_searches": 0,
+                        "country": "hr",
+                        "language": "hr",
                         "last_active": datetime.now().isoformat()
                     }
                     created = requests.post(
