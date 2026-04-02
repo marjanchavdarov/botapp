@@ -64,11 +64,15 @@ def verify_otp():
                 if existing and len(existing) > 0:
                     user_id = existing[0].get("id")
                 else:
+                    import uuid
                     new_user = {
                         "phone": phone,
+                        "device_id": str(uuid.uuid4()),
                         "total_searches": 0,
                         "country": "hr",
                         "language": "hr",
+                        "favorites": [],
+                        "conversation": [],
                         "last_active": datetime.now().isoformat()
                     }
                     created = requests.post(
