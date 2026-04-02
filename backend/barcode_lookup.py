@@ -49,15 +49,28 @@ def barcode_lookup(barcode):
 
     # Track scan if user phone provided
     phone = request.args.get("phone")
-    if phone:
+    if phone and unique:
         try:
+            # Increment user search count
             requests.post(
                 f"{SUPABASE_URL}/rest/v1/rpc/increment_searches",
                 headers={**headers(), "Content-Type": "application/json"},
                 json={"user_phone": phone}
             )
-        except:
-            pass
+            # Log scan event
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/scan_events",
+                headers={**headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={
+                    "user_phone": phone,
+                    "barcode": barcode,
+                    "product_name": master["name"] if master else (unique[0]["product"] if unique else ""),
+                    "cheapest_store": unique[0]["store"] if unique else None,
+                    "cheapest_price": float(unique[0]["sale_price"]) if unique else None,
+                }
+            )
+        except Exception as e:
+            print(f"Track error: {e}")
 
     return jsonify({
         "barcode": barcode,
