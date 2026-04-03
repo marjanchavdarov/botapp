@@ -1,76 +1,99 @@
 import os, requests
-from flask import Blueprint, jsonify, request
-from datetime import date
+from flask import Blueprint, request, jsonify
 
-barcode_bp = Blueprint('barcode', __name__)
+barcode_bp = Blueprint("barcode", __name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+CIJENE_API_KEY = os.environ.get("CIJENE_API_KEY", "")
+CIJENE_BASE = "https://api.cijene.dev/v1"
 
-def headers():
+def sb_headers():
     return {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
 
+def cijene_headers():
+    return {"Authorization": f"Bearer {CIJENE_API_KEY}"}
+
 @barcode_bp.route("/api/barcode/<barcode>")
 def barcode_lookup(barcode):
-    # Get clean product info from master_products
-    mp = requests.get(
-        f"{SUPABASE_URL}/rest/v1/master_products",
-        headers=headers(),
-        params={"barcode": f"eq.{barcode}", "limit": 1},
-        timeout=10
-    )
+    # Call cijene.dev API
+    try:
+        r = requests.get(
+            f"{CIJENE_BASE}/products/{barcode}/",
+            headers=cijene_headers(),
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            # Normalize to our format
+            prices = []
+            for chain in data.get("chains", []):
+                prices.append({
+                    "store": chain["chain"],
+                    "product": chain["name"],
+                    "sale_price": chain["min_price"],
+                    "original_price": None,
+                    "min_price": chain["min_price"],
+                    "max_price": chain["max_price"],
+                    "avg_price": chain["avg_price"],
+                    "valid_until": chain["price_date"],
+                })
+            # Sort by min price
+            prices.sort(key=lambda x: float(x["sale_price"] or 999))
+
+            # Track scan if phone provided
+            phone = request.args.get("phone")
+            if phone and prices:
+                try:
+                    requests.post(
+                        f"{SUPABASE_URL}/rest/v1/rpc/increment_searches",
+                        headers={**sb_headers(), "Content-Type": "application/json"},
+                        json={"user_phone": phone}
+                    )
+                    requests.post(
+                        f"{SUPABASE_URL}/rest/v1/scan_events",
+                        headers={**sb_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                        json={
+                            "user_phone": phone,
+                            "barcode": barcode,
+                            "product_name": data.get("name"),
+                            "cheapest_store": prices[0]["store"] if prices else None,
+                            "cheapest_price": float(prices[0]["sale_price"]) if prices else None,
+                        }
+                    )
+                except:
+                    pass
+
+            return jsonify({
+                "barcode": barcode,
+                "name": data.get("name"),
+                "brand": data.get("brand"),
+                "quantity": data.get("quantity"),
+                "unit": data.get("unit"),
+                "prices": prices
+            })
+    except Exception as e:
+        print(f"cijene.dev error: {e}")
+
+    # Fallback to our Supabase DB
+    mp = requests.get(f"{SUPABASE_URL}/rest/v1/master_products", headers=sb_headers(),
+        params={"barcode": f"eq.{barcode}", "limit": 1}, timeout=10)
     master = mp.json()[0] if mp.status_code == 200 and mp.json() else None
 
-    # Get prices from products table
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/products",
-        headers=headers(),
-        params={
-            "barcode": f"eq.{barcode}",
-            "select": "store,product,sale_price,original_price,valid_until",
-            "limit": 100,
-            "order": "sale_price"
-        },
-        timeout=15
-    )
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/products", headers=sb_headers(),
+        params={"barcode": f"eq.{barcode}", "select": "store,product,sale_price,original_price,valid_until",
+                "limit": 100, "order": "sale_price"}, timeout=15)
     prices = r.json() if r.status_code == 200 else []
 
-    # Deduplicate by store, keep cheapest
     seen = {}
     for p in prices:
         store = p["store"]
         if store not in seen or float(p["sale_price"] or 999) < float(seen[store]["sale_price"] or 999):
             seen[store] = p
-
     unique = sorted(seen.values(), key=lambda x: float(x["sale_price"] or 999))
-
-    # Track scan if user phone provided
-    phone = request.args.get("phone")
-    if phone and unique:
-        try:
-            # Increment user search count
-            requests.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/increment_searches",
-                headers={**headers(), "Content-Type": "application/json"},
-                json={"user_phone": phone}
-            )
-            # Log scan event
-            requests.post(
-                f"{SUPABASE_URL}/rest/v1/scan_events",
-                headers={**headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
-                json={
-                    "user_phone": phone,
-                    "barcode": barcode,
-                    "product_name": master["name"] if master else (unique[0]["product"] if unique else ""),
-                    "cheapest_store": unique[0]["store"] if unique else None,
-                    "cheapest_price": float(unique[0]["sale_price"]) if unique else None,
-                }
-            )
-        except Exception as e:
-            print(f"Track error: {e}")
 
     return jsonify({
         "barcode": barcode,
