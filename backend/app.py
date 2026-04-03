@@ -28,6 +28,8 @@ from barcode_lookup import barcode_bp
 app.register_blueprint(barcode_bp)
 from auth import auth_bp
 app.register_blueprint(auth_bp)
+from equivalents import eq_bp
+app.register_blueprint(eq_bp)
 
 # Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
