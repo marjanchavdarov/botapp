@@ -34,6 +34,16 @@ def parse_unit_price(sale_price, quantity_str):
             unit_label = 'L' if unit in ('ml','l') else 'kg'
             return round(price / total, 2), unit_label
 
+        # Plain number with unit in master_products (e.g. quantity="0.5", unit="L")
+        plain = re.match(r'^([\d.]+)$', q)
+        if plain:
+            amount = float(plain.group(1))
+            # Check if it looks like litres (< 5) or kg
+            if amount <= 5:
+                return round(price / amount, 2), 'L'
+            else:
+                return round(price / amount, 2), 'kg'
+
         # Single: 0.5l, 500ml, 1kg, 500g
         single = re.match(r'([\d.]+)\s*(ml|l|g|kg)', q)
         if single:
