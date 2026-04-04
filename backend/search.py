@@ -19,29 +19,30 @@ def ai_filter(query, products):
     for p in products:
         product_list.append(f"{p['ean']}: {p['name']} ({p['brand'] or ''}) {p['quantity'] or ''} {p['unit'] or ''}")
     
-    prompt = f"""You are a strict product search filter for a Croatian grocery app.
+    prompt = f"""You are a strict product search filter for a Croatian grocery price comparison app.
 
 User searched for: "{query}"
 
-TASK: From the product list below, return ONLY EAN codes of products that ARE the thing the user searched for.
-EXCLUDE products that merely CONTAIN the search word as a flavor or ingredient.
+TASK: Return ONLY the EAN codes of products that ARE exactly what the user searched for.
 
-Rules:
-- "luk" = fresh onion only. EXCLUDE: chips with onion, crackers with onion, seasonings, pasta
-- "mlijeko" = plain cow milk only. EXCLUDE: chocolate milk, oat milk, soy milk, flavored milk  
-- "kruh" = plain bread only. EXCLUDE: breadcrumbs, crackers, bread-flavored snacks
-- "pivo" = beer only. EXCLUDE: beer-flavored snacks
-- For brand searches like "coca cola" = only that brand's products
+CRITICAL RULES:
+1. "mlijeko" = ONLY plain white cow milk (whole, semi-skimmed, skimmed). EXCLUDE chocolate milk, flavored milk, oat milk, rice milk, Disney milk, lactose-free milk unless user specified
+2. "luk" = ONLY fresh/dried onion bulb. EXCLUDE chips with onion flavor, crackers, seasonings, bruschette  
+3. "kruh" = ONLY plain bread loaves. EXCLUDE breadcrumbs, croutons, crackers
+4. "pivo" = ONLY beer. EXCLUDE beer-flavored snacks
+5. Brand searches: return only that exact brand
+6. If user adds "1L", "2L" etc - filter by that size too
+7. When in doubt, EXCLUDE the product
 
-Products:
+Products to filter:
 {chr(10).join(product_list)}
 
-Return ONLY a JSON array of EAN strings. No explanation. Example: ["1234567890123"]
-If nothing matches strictly, return []"""
+Respond with ONLY a JSON array of EAN strings that pass the filter. Nothing else.
+Example response: ["1234567890123", "9876543210987"]"""
 
     try:
         r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
             json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500}},
             timeout=10
         )
