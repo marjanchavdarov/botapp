@@ -88,7 +88,7 @@ def search_products():
             })
 
         # AI filter
-        if ai != "0" and len(products) > 3:
+        if False and ai != "0" and len(products) > 3:
             products = ai_filter(q, products)
 
         return jsonify({"products": products, "total": len(products)})
