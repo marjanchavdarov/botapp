@@ -1399,3 +1399,134 @@ def service_worker():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
+# ─── SHARED LISTS ────────────────────────────────────────────────────────────
+
+import random, string
+
+def gen_invite_code():
+    return 'STDK-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+
+@app.route('/api/shared-list/create', methods=['POST'])
+def create_shared_list():
+    data = request.json
+    phone = data.get('phone')
+    name = data.get('name', 'Obiteljska lista')
+    if not phone:
+        return jsonify({'error': 'Phone required'}), 400
+    code = gen_invite_code()
+    r = requests.post(
+        f"{SUPABASE_URL}/rest/v1/shared_lists",
+        headers={**db_headers(), "Prefer": "return=representation"},
+        json={'name': name, 'invite_code': code, 'owner_phone': phone}
+    )
+    lst = r.json()[0]
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/shared_list_members",
+        headers=db_headers(),
+        json={'list_id': lst['id'], 'phone': phone}
+    )
+    return jsonify({'ok': True, 'list': lst})
+
+@app.route('/api/shared-list/join', methods=['POST'])
+def join_shared_list():
+    data = request.json
+    phone = data.get('phone')
+    code = data.get('invite_code', '').upper().strip()
+    if not phone or not code:
+        return jsonify({'error': 'Phone and code required'}), 400
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/shared_lists?invite_code=eq.{code}&select=*",
+        headers=db_headers()
+    )
+    lists = r.json()
+    if not lists:
+        return jsonify({'error': 'Neispravan kod'}), 404
+    lst = lists[0]
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/shared_list_members",
+        headers={**db_headers(), "Prefer": "resolution=ignore-duplicates"},
+        json={'list_id': lst['id'], 'phone': phone}
+    )
+    return jsonify({'ok': True, 'list': lst})
+
+@app.route('/api/shared-list/my', methods=['GET'])
+def get_my_shared_lists():
+    phone = request.args.get('phone')
+    if not phone:
+        return jsonify([])
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/shared_list_members?phone=eq.{phone}&select=list_id",
+        headers=db_headers()
+    )
+    member_rows = r.json()
+    if not member_rows:
+        return jsonify([])
+    list_ids = ','.join(f'"{m["list_id"]}"' for m in member_rows)
+    r2 = requests.get(
+        f"{SUPABASE_URL}/rest/v1/shared_lists?id=in.({list_ids})&select=*",
+        headers=db_headers()
+    )
+    return jsonify(r2.json())
+
+@app.route('/api/shared-list/<list_id>/items', methods=['GET'])
+def get_shared_items(list_id):
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/shared_list_items?list_id=eq.{list_id}&select=*&order=added_at.asc",
+        headers=db_headers()
+    )
+    return jsonify(r.json())
+
+@app.route('/api/shared-list/<list_id>/items', methods=['POST'])
+def add_shared_item(list_id):
+    data = request.json
+    item = {
+        'list_id': list_id,
+        'ean': data.get('ean'),
+        'name': data.get('name'),
+        'brand': data.get('brand', ''),
+        'quantity': data.get('quantity', 1),
+        'size': data.get('size', ''),
+        'added_by_phone': data.get('phone', ''),
+    }
+    r = requests.post(
+        f"{SUPABASE_URL}/rest/v1/shared_list_items",
+        headers={**db_headers(), "Prefer": "return=representation"},
+        json=item
+    )
+    return jsonify({'ok': True, 'item': r.json()[0] if r.json() else {}})
+
+@app.route('/api/shared-list/<list_id>/items/<item_id>', methods=['DELETE'])
+def delete_shared_item(list_id, item_id):
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/shared_list_items?id=eq.{item_id}&list_id=eq.{list_id}",
+        headers=db_headers()
+    )
+    return jsonify({'ok': True})
+
+@app.route('/api/shared-list/<list_id>/items/<item_id>/qty', methods=['PATCH'])
+def update_shared_item_qty(list_id, item_id):
+    qty = request.json.get('quantity', 1)
+    requests.patch(
+        f"{SUPABASE_URL}/rest/v1/shared_list_items?id=eq.{item_id}&list_id=eq.{list_id}",
+        headers=db_headers(),
+        json={'quantity': max(1, qty)}
+    )
+    return jsonify({'ok': True})
+
+@app.route('/api/shared-list/<list_id>/members', methods=['GET'])
+def get_shared_members(list_id):
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/shared_list_members?list_id=eq.{list_id}&select=*",
+        headers=db_headers()
+    )
+    return jsonify(r.json())
+
+@app.route('/api/shared-list/<list_id>/leave', methods=['POST'])
+def leave_shared_list(list_id):
+    phone = request.json.get('phone')
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/shared_list_members?list_id=eq.{list_id}&phone=eq.{phone}",
+        headers=db_headers()
+    )
+    return jsonify({'ok': True})
