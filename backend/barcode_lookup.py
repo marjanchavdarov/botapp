@@ -17,6 +17,37 @@ def sb_headers():
 def cijene_headers():
     return {"Authorization": f"Bearer {CIJENE_API_KEY}"}
 
+def get_product_image(barcode):
+    """Fetch product image from Supabase cache or Open Food Facts"""
+    try:
+        # Check Supabase cache first
+        r = requests.get(
+            f"{SUPABASE_URL}/storage/v1/object/public/katalog-images/products/{barcode}.jpg",
+            timeout=3
+        )
+        if r.status_code == 200:
+            return f"{SUPABASE_URL}/storage/v1/object/public/katalog-images/products/{barcode}.jpg"
+    except: pass
+    try:
+        # Try Open Food Facts
+        r = requests.get(f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json", timeout=4)
+        if r.status_code == 200:
+            data = r.json()
+            img = data.get("product", {}).get("image_front_url") or data.get("product", {}).get("image_url")
+            if img:
+                return img
+    except: pass
+    try:
+        # Try Open Beauty Facts
+        r = requests.get(f"https://world.openbeautyfacts.org/api/v0/product/{barcode}.json", timeout=4)
+        if r.status_code == 200:
+            data = r.json()
+            img = data.get("product", {}).get("image_front_url") or data.get("product", {}).get("image_url")
+            if img:
+                return img
+    except: pass
+    return None
+
 @barcode_bp.route("/api/barcode/<barcode>")
 def barcode_lookup(barcode):
     # Call cijene.dev API
@@ -67,12 +98,14 @@ def barcode_lookup(barcode):
                 except:
                     pass
 
+            image_url = get_product_image(barcode)
             return jsonify({
                 "barcode": barcode,
                 "name": data.get("name"),
                 "brand": data.get("brand"),
                 "quantity": data.get("quantity"),
                 "unit": data.get("unit"),
+                "image_url": image_url,
                 "prices": prices
             })
     except Exception as e:
@@ -95,11 +128,13 @@ def barcode_lookup(barcode):
             seen[store] = p
     unique = sorted(seen.values(), key=lambda x: float(x["sale_price"] or 999))
 
+    image_url = get_product_image(barcode)
     return jsonify({
         "barcode": barcode,
         "name": master["name"] if master else (unique[0]["product"] if unique else ""),
         "brand": master["brand"] if master else "",
         "unit": master["unit"] if master else "",
         "quantity": master["quantity"] if master else "",
+        "image_url": image_url,
         "prices": unique
     })
