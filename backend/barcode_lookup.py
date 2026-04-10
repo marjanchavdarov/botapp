@@ -48,37 +48,6 @@ def get_product_image(barcode):
     except: pass
     return None
 
-def get_product_image(barcode):
-    """Fetch product image from Supabase cache or Open Food Facts"""
-    try:
-        # Check Supabase cache first
-        r = requests.get(
-            f"{SUPABASE_URL}/storage/v1/object/public/katalog-images/products/{barcode}.jpg",
-            timeout=3
-        )
-        if r.status_code == 200:
-            return f"{SUPABASE_URL}/storage/v1/object/public/katalog-images/products/{barcode}.jpg"
-    except: pass
-    try:
-        # Try Open Food Facts
-        r = requests.get(f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json", timeout=4)
-        if r.status_code == 200:
-            data = r.json()
-            img = data.get("product", {}).get("image_front_url") or data.get("product", {}).get("image_url")
-            if img:
-                return img
-    except: pass
-    try:
-        # Try Open Beauty Facts
-        r = requests.get(f"https://world.openbeautyfacts.org/api/v0/product/{barcode}.json", timeout=4)
-        if r.status_code == 200:
-            data = r.json()
-            img = data.get("product", {}).get("image_front_url") or data.get("product", {}).get("image_url")
-            if img:
-                return img
-    except: pass
-    return None
-
 @barcode_bp.route("/api/barcode/<barcode>")
 def barcode_lookup(barcode):
     # Call cijene.dev API
