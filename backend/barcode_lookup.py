@@ -48,6 +48,16 @@ def get_product_image(barcode):
     except: pass
     return None
 
+@barcode_bp.route("/api/chains")
+def get_chains():
+    try:
+        r = requests.get(f"{CIJENE_BASE}/chains/", headers=cijene_headers(), timeout=5)
+        if r.status_code == 200:
+            chains = r.json().get("chains", [])
+            return jsonify({"chains": chains, "count": len(chains)})
+    except: pass
+    return jsonify({"chains": [], "count": 25})
+
 @barcode_bp.route("/api/barcode/<barcode>")
 def barcode_lookup(barcode):
     # Call cijene.dev API
