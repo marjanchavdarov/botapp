@@ -148,3 +148,109 @@ def barcode_lookup(barcode):
         "image_url": image_url,
         "prices": unique
     })
+
+
+import math
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    return R * 2 * math.asin(math.sqrt(a))
+
+@barcode_bp.route("/api/barcode/<barcode>/nearby")
+def barcode_nearby(barcode):
+    lat = request.args.get("lat", type=float)
+    lon = request.args.get("lon", type=float)
+    d = request.args.get("d", 5.0, type=float)
+
+    if not lat or not lon:
+        return jsonify({"error": "lat and lon required"}), 400
+
+    try:
+        # Fetch per-branch prices filtered by location from cijene.dev
+        r = requests.get(
+            f"{CIJENE_BASE}/prices/",
+            headers=cijene_headers(),
+            params={"eans": barcode, "lat": lat, "lon": lon, "d": d},
+            timeout=12
+        )
+        if r.status_code != 200:
+            return jsonify({"error": "cijene.dev error", "status": r.status_code}), 502
+
+        data = r.json()
+        raw_prices = data.get("prices", [])
+
+        # Get product meta from regular endpoint
+        meta = {}
+        try:
+            mr = requests.get(
+                f"{CIJENE_BASE}/products/{barcode}/",
+                headers=cijene_headers(),
+                timeout=6
+            )
+            if mr.status_code == 200:
+                md = mr.json()
+                meta = {
+                    "name": md.get("name", ""),
+                    "brand": md.get("brand", ""),
+                    "quantity": md.get("quantity", ""),
+                    "unit": md.get("unit", ""),
+                }
+        except:
+            pass
+
+        # Normalise and attach distance
+        prices = []
+        for p in raw_prices:
+            store_lat = p.get("lat")
+            store_lon = p.get("lon")
+            dist = None
+            if store_lat and store_lon:
+                dist = round(haversine_km(lat, lon, store_lat, store_lon), 2)
+
+            prices.append({
+                "store": p.get("chain_code") or p.get("chain") or p.get("store", ""),
+                "store_code": p.get("store_code") or p.get("code", ""),
+                "address": p.get("address", ""),
+                "city": p.get("city", ""),
+                "sale_price": str(p.get("price") or p.get("sale_price") or 0),
+                "original_price": str(p.get("regular_price") or p.get("original_price") or ""),
+                "distance_km": dist,
+            })
+
+        # Sort by price, then distance
+        prices.sort(key=lambda x: (float(x["sale_price"] or 999), x["distance_km"] or 999))
+
+        image_url = get_product_image(barcode)
+
+        # Track scan
+        phone = request.args.get("phone")
+        if phone and prices:
+            try:
+                requests.post(
+                    f"{SUPABASE_URL}/rest/v1/scan_events",
+                    headers={**sb_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                    json={
+                        "user_phone": phone,
+                        "barcode": barcode,
+                        "product_name": meta.get("name"),
+                        "cheapest_store": prices[0]["store"] if prices else None,
+                        "cheapest_price": float(prices[0]["sale_price"]) if prices else None,
+                    }
+                )
+            except:
+                pass
+
+        return jsonify({
+            "barcode": barcode,
+            **meta,
+            "image_url": image_url,
+            "prices": prices,
+            "location": {"lat": lat, "lon": lon, "radius_km": d},
+        })
+
+    except Exception as e:
+        print(f"nearby error: {e}")
+        return jsonify({"error": str(e)}), 500
