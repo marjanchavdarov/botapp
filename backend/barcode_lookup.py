@@ -223,3 +223,23 @@ def barcode_lookup(barcode):
         "prices": unique,
         "mode": "supabase_fallback",
     })
+
+
+@barcode_bp.route("/api/geocode")
+def geocode():
+    city = request.args.get("city", "")
+    if not city:
+        return jsonify({"error": "city required"}), 400
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": f"{city}, Croatia", "format": "json", "limit": 1},
+            headers={"User-Agent": "Katalog/1.0"},
+            timeout=5
+        )
+        results = r.json()
+        if results:
+            return jsonify({"lat": float(results[0]["lat"]), "lon": float(results[0]["lon"]), "display": results[0]["display_name"]})
+    except Exception as e:
+        print(f"geocode error: {e}")
+    return jsonify({"error": "not found"}), 404
