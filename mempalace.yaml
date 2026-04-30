@@ -1,0 +1,25 @@
+wing: botapp
+rooms:
+- name: ingestion
+  description: Files from ingestion/
+  keywords:
+  - ingestion
+  - ingestion
+- name: sql
+  description: Files from sql/
+  keywords:
+  - sql
+  - sql
+- name: backend
+  description: Files from backend/
+  keywords:
+  - backend
+  - backend
+- name: frontend
+  description: Files from frontend/
+  keywords:
+  - frontend
+  - frontend
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []
