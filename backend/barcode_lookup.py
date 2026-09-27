@@ -319,19 +319,29 @@ def normalize_store_prices(store_prices, user_lat=None, user_lon=None):
 
 
 def aggregate_from(store_prices):
-    """Cheapest price per chain, for requests with no location."""
+    """
+    Cheapest price per chain, for requests with no location.
+
+    Keeps the original price string rather than round-tripping it through a
+    float: str(float("1.00")) is "1.0", which disagrees with rows_to_prices,
+    which preserves the source string. Harmless once the app reformats with
+    toFixed(2), but there is no reason for the two paths to differ.
+    """
     best = {}
     for sp in store_prices:
         chain = sp.get("chain", "")
         sale = sp.get("special_price") or sp.get("regular_price")
         if sale is None:
             continue
-        price = float(sale)
-        if chain not in best or price < best[chain]:
-            best[chain] = price
+        try:
+            price = float(sale)
+        except (TypeError, ValueError):
+            continue
+        if chain not in best or price < best[chain][0]:
+            best[chain] = (price, str(sale))
     prices = [{"store": c, "store_code": "", "address": "", "city": "",
-               "sale_price": str(p), "original_price": None,
-               "distance_km": None} for c, p in best.items()]
+               "sale_price": raw, "original_price": None,
+               "distance_km": None} for c, (_, raw) in best.items()]
     prices.sort(key=lambda x: float(x["sale_price"] or 999))
     return prices
 
